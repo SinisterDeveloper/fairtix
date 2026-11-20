@@ -103,7 +103,8 @@ export default function FanPage() {
   async function credential() {
     setBusy(true);
     try {
-      const expirySeconds = status?.resaleCutoff ? status.resaleCutoff + 60 : undefined;
+      const inGate = status?.phase?.toUpperCase().includes('GATE');
+      const expirySeconds = !inGate && status?.resaleCutoff ? status.resaleCutoff + 60 : undefined;
       const r = await fetch('/api/credential/sign', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

@@ -86,7 +86,9 @@ export default function OrganiserPage() {
             ? 4
             : 0;
   const nextPhaseHint = phase.includes('CLAIM')
-    ? 'Currently in CLAIM → click to open RESALE'
+    ? status?.issuedCount === 0
+      ? '0 tickets claimed yet — have a reserved fan claim on /fan before advancing to RESALE!'
+      : 'Currently in CLAIM → click to open RESALE'
     : phase.includes('RESALE')
       ? 'Currently in RESALE → click to open GATE'
       : '3. Fast-forwards the demo clock (Claim → Resale → Gate).';

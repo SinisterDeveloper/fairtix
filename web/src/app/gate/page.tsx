@@ -167,6 +167,14 @@ export default function GatePage() {
         </p>
       )}
 
+      {status && !currentTicket && parsedCred?.slot !== undefined && (
+        <div className="role-warning" role="status">
+          Slot #{credentialSlot} has <strong>not been claimed yet</strong> on-chain (<code>Not issued</code>).
+          A reserved fan must claim the ticket during the <strong>CLAIM</strong> phase before it can
+          be verified at the gate.
+        </div>
+      )}
+
       {status && status.phase !== 'GATE' && (
         <div className="flow-callout">
           <span>
