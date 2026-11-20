@@ -137,6 +137,11 @@ function activitySubject(opts) {
   return subject.startsWith('0x') && subject.length === 66 ? subject : ethers.id(subject);
 }
 
+function activitySubjectLabel(opts) {
+  if (!opts.subject && !opts.role) return null;
+  return String(opts.subject || `demo-${opts.role}`);
+}
+
 function loadArtifact() {
   if (!existsSync(artifactPath)) {
     throw new Error('Missing artifacts/FairTickets.json. Run `node src/compile.cjs` first.');
@@ -615,6 +620,7 @@ async function main() {
                 action: cmd,
                 role: opts.role || null,
                 subject: cmd === 'enter' ? activitySubject(opts) : null,
+                subjectLabel: cmd === 'enter' ? activitySubjectLabel(opts) : null,
                 scanId: value.scanId || rawScanIdOpt || null,
                 success: !failed,
                 txHash: value.txHash || null,
@@ -747,8 +753,10 @@ async function main() {
     }
     let volumeEvidence;
     if (existsSync(volumeSummaryPath)) {
-      const s = JSON.parse(readFileSync(volumeSummaryPath, 'utf8'));
-      volumeEvidence = { totalWrites: s.totalWrites ?? s.countedWrites?.total, writesPerSecond: s.writesPerSecond, manifestSha256: s.manifestSha256 };
+      try {
+        const s = JSON.parse(readFileSync(volumeSummaryPath, 'utf8'));
+        volumeEvidence = { totalWrites: s.totalWrites ?? s.countedWrites?.total, writesPerSecond: s.writesPerSecond, manifestSha256: s.manifestSha256 };
+      } catch {}
     }
     console.log(
       JSON.stringify(
@@ -1499,23 +1507,78 @@ async function main() {
   }
 
   if (cmd === 'alerts') {
-    const records = existsSync(activityLogPath)
-      ? readFileSync(activityLogPath, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
-      : [];
+    const records = [];
+    if (existsSync(activityLogPath)) {
+      for (const line of readFileSync(activityLogPath, 'utf8').split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          records.push(JSON.parse(line));
+        } catch {}
+      }
+    }
     const alerts = [];
     const entriesBySubject = new Map();
+    const subjectLabels = new Map();
     const failedByScan = new Map();
     for (const row of records) {
-      if (row.action === 'enter' && row.subject) entriesBySubject.set(row.subject, (entriesBySubject.get(row.subject) || 0) + 1);
-      if (row.action === 'redeem' && row.scanId && !row.success) failedByScan.set(row.scanId, (failedByScan.get(row.scanId) || 0) + 1);
+      if (row.action === 'enter' && row.subject) {
+        entriesBySubject.set(row.subject, (entriesBySubject.get(row.subject) || 0) + 1);
+        if (row.subjectLabel) subjectLabels.set(row.subject, row.subjectLabel);
+      }
+      if (row.action === 'redeem' && row.scanId && !row.success) {
+        failedByScan.set(row.scanId, (failedByScan.get(row.scanId) || 0) + 1);
+      }
     }
     const timestamp = new Date().toISOString();
-    for (const [subjectOrSlot, count] of entriesBySubject) if (count >= 3) alerts.push({ id: `entry-${subjectOrSlot}`, severity: 'review', rule: 'REPEATED_ENTRY_SUBJECT', count, reason: 'The same demo subject has made repeated entry requests.', subjectOrSlot, timestamp, note: 'Review signal only; does not auto-block' });
-    for (const [subjectOrSlot, count] of failedByScan) if (count >= 2) alerts.push({ id: `scan-${subjectOrSlot}`, severity: 'review', rule: 'REPEATED_FAILED_SCAN', count, reason: 'A scan ID has repeated failed admission attempts.', subjectOrSlot, timestamp, note: 'Review signal only; does not auto-block' });
+    for (const [subjectOrSlot, count] of entriesBySubject) {
+      if (count >= 3) {
+        const subjectLabel = subjectLabels.get(subjectOrSlot) || null;
+        alerts.push({
+          id: `entry-${subjectOrSlot}`,
+          severity: 'review',
+          rule: 'REPEATED_ENTRY_SUBJECT',
+          grouping: 'subject',
+          count,
+          reason: 'The same demo subject has made repeated entry requests.',
+          subjectOrSlot,
+          ...(subjectLabel ? { subjectLabel } : {}),
+          timestamp,
+          note: 'Review signal only; does not auto-block',
+        });
+      }
+    }
+    for (const [subjectOrSlot, count] of failedByScan) {
+      if (count >= 2) {
+        alerts.push({
+          id: `scan-${subjectOrSlot}`,
+          severity: 'review',
+          rule: 'REPEATED_FAILED_SCAN',
+          grouping: 'scanId',
+          count,
+          reason: 'A scan ID has repeated failed admission attempts.',
+          subjectOrSlot,
+          timestamp,
+          note: 'Review signal only; does not auto-block',
+        });
+      }
+    }
     const now = Date.now();
     const recent = records.filter((row) => now - Date.parse(row.timestamp) <= 10_000);
-    if (recent.length >= 5) alerts.push({ id: `burst-${Math.floor(now / 10000)}`, severity: 'review', rule: 'REQUEST_BURST', count: recent.length, reason: 'Five or more requests were recorded within ten seconds.', subjectOrSlot: 'event', timestamp, note: 'Review signal only; does not auto-block' });
-    console.log(JSON.stringify({ ok: true, alerts }, null, 2));
+    if (recent.length >= 5) {
+      alerts.push({
+        id: `burst-${Math.floor(now / 10000)}`,
+        severity: 'review',
+        rule: 'REQUEST_BURST',
+        grouping: 'event',
+        windowSeconds: 10,
+        count: recent.length,
+        reason: 'Five or more requests were recorded within ten seconds.',
+        subjectOrSlot: 'event',
+        timestamp,
+        note: 'Review signal only; does not auto-block',
+      });
+    }
+    console.log(JSON.stringify({ ok: true, alerts, activityCount: records.length }, null, 2));
     return;
   }
 
@@ -1534,6 +1597,7 @@ if (require.main === module) {
           action: parsed.cmd,
           role: parsed.opts.role || null,
           subject: parsed.cmd === 'enter' ? activitySubject(parsed.opts) : null,
+          subjectLabel: parsed.cmd === 'enter' ? activitySubjectLabel(parsed.opts) : null,
           scanId: rawScanIdOpt,
           success: false,
           txHash: err?.txHash || null,
