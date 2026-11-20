@@ -3,7 +3,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const ZONES = [
-  { href: '/fan', label: 'User (Fan)', match: ['/fan'] },
+  { href: '/', label: 'Shows', match: ['/'] },
+  { href: '/fan', label: 'Book Tickets', match: ['/fan'] },
+  { href: '/bookings', label: 'My Bookings', match: ['/bookings'] },
   { href: '/organiser', label: 'Organiser / Gate', match: ['/organiser', '/gate'] },
   { href: '/admin', label: 'Admin', match: ['/admin', '/attack'] },
 ];

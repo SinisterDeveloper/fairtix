@@ -55,4 +55,23 @@ nav a.nav-active{color:var(--green);border-bottom:2px solid var(--green);padding
 .status-strip>div{display:grid;gap:4px}
 .status-strip span{font-size:12px;color:var(--muted)}
 .status-strip strong{font-size:16px}
-@media(max-width:760px){.stepper,.role-cards,.step-actions,.gate-compare,.inline-fields,.shows-grid{grid-template-columns:1fr}}
+.bms-hero{border-radius:18px;padding:32px;background:linear-gradient(135deg,#132a23 0%,#176c52 65%,#248f6e 100%);color:#fff;display:grid;gap:14px;margin-bottom:24px;box-shadow:0 14px 36px #132a2324}
+.bms-hero .eyebrow{color:#a9e5cf}
+.bms-hero h1{margin:0;font-size:clamp(28px,4vw,44px);color:#fff}
+.bms-hero p{margin:0;color:#e3f3ec;max-width:620px;font-size:15px;line-height:1.55}
+.bms-hero-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.bms-btn-light{background:#fff;color:#132a23;border-radius:9px;padding:12px 18px;font:700 14px Arial,sans-serif;display:inline-block}
+.bms-btn-outline{background:transparent;color:#fff;border:1px solid #ffffff66;border-radius:9px;padding:11px 16px;font:600 14px Arial,sans-serif;display:inline-block}
+.show-poster{height:112px;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:space-between;color:#fff;margin-bottom:8px}
+.show-poster.p1{background:linear-gradient(135deg,#134e4a,#0f766e)}
+.show-poster.p2{background:linear-gradient(135deg,#312e81,#4f46e5)}
+.show-poster.p3{background:linear-gradient(135deg,#7c2d12,#ea580c)}
+.show-poster.p4{background:linear-gradient(135deg,#831843,#db2777)}
+.show-tag{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:#00000044;padding:4px 8px;border-radius:6px;align-self:flex-start}
+.ticket-stub{border:1px solid #c6dfd2;border-radius:14px;background:#fff;overflow:hidden;display:grid;grid-template-columns:1fr auto}
+.ticket-stub-main{padding:18px 20px;display:grid;gap:6px}
+.ticket-stub-side{padding:18px 20px;background:#f4faf6;border-left:2px dashed #b9d7c7;display:grid;gap:8px;align-content:center;min-width:170px;text-align:center}
+.zone-subnav{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}
+.zone-subnav a{padding:8px 14px;border-radius:999px;font-size:13px;font-weight:600;border:1px solid var(--line);background:#fff;color:var(--muted)}
+.zone-subnav a.active{background:var(--green);color:#fff;border-color:var(--green)}
+@media(max-width:760px){.stepper,.role-cards,.step-actions,.gate-compare,.inline-fields,.shows-grid,.ticket-stub{grid-template-columns:1fr}.ticket-stub-side{border-left:0;border-top:2px dashed #b9d7c7}}
