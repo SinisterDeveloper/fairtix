@@ -519,3 +519,60 @@ test('Hybrid Rules + ML catches unlinked behavioral stealth bots missed by rules
   assert.ok(typeof sniperDecision.mlScore === 'number' && sniperDecision.mlScore >= 65);
   assert.ok(Array.isArray(sniperDecision.mlTopContributors) && sniperDecision.mlTopContributors.length > 0);
 });
+
+test('Unsupervised human-baseline anomaly detector and live-trace auto-learning resist baseline poisoning', () => {
+  const tempDir = join(tmpdir(), `fairtix-live-learn-${Date.now()}`);
+  const baselinePath = join(tempDir, 'human-baseline.json');
+  const liveTracePath = join(tempDir, 'live-traces.ndjson');
+
+  try {
+    const engine = new RiskEngine({
+      protectionsEnabled: true,
+      mlEnabled: true,
+      unsupervisedOptions: { baselinePath, liveTracePath },
+    });
+    const saleId = 'concert_unsupervised';
+    engine.configureSale(saleId, { capacity: 50, requireQueueGrants: true });
+
+    const initialSamples = engine.getBaselineStats().sampleCount;
+    const baseMs = Date.parse('2026-11-21T03:00:00+05:30');
+
+    // 1. Clean human session auto-learns into the baseline
+    const legit = {
+      accountId: 'live_human_1',
+      sessionId: 'sess_live_1',
+      deviceId: 'dev_live_1',
+      networkId: 'net_live_1',
+      paymentTokenHash: 'pay_live_1',
+    };
+    engine.evaluate({ eventId: 'lh_1', timestamp: new Date(baseMs).toISOString(), eventType: 'ACCOUNT_REGISTER', eventIdempotencyKey: 'k_lh_1', ...legit, eventContext: { eventSaleId: saleId, deviceId: legit.deviceId, networkId: legit.networkId, paymentTokenHash: legit.paymentTokenHash } });
+    engine.evaluate({ eventId: 'lh_2', timestamp: new Date(baseMs + 1500).toISOString(), eventType: 'QUEUE_JOIN', eventIdempotencyKey: 'k_lh_2', ...legit, eventContext: { eventSaleId: saleId, deviceId: legit.deviceId, networkId: legit.networkId, paymentTokenHash: legit.paymentTokenHash } });
+    const grant = engine.issueQueueGrant({ eventSaleId: saleId, accountId: legit.accountId, sessionId: legit.sessionId, issuedAtMs: baseMs + 1500 });
+    const ckHuman = engine.evaluate({ eventId: 'lh_3', timestamp: new Date(baseMs + 4000).toISOString(), eventType: 'CHECKOUT_ATTEMPT', eventIdempotencyKey: 'k_lh_3', ...legit, eventContext: { eventSaleId: saleId, deviceId: legit.deviceId, networkId: legit.networkId, paymentTokenHash: legit.paymentTokenHash, queueGrant: grant } });
+
+    assert.equal(ckHuman.decision, 'ALLOW');
+    assert.equal(engine.getBaselineStats().sampleCount, initialSamples + 1);
+
+    // 2. Robotic unlinked bot is flagged by both supervised ML and unsupervised baseline, and does NOT poison baseline
+    const bot = {
+      accountId: 'live_bot_1',
+      sessionId: 'sess_bot_1',
+      deviceId: 'dev_bot_1',
+      networkId: 'net_bot_1',
+      paymentTokenHash: 'pay_bot_1',
+    };
+    engine.evaluate({ eventId: 'lb_1', timestamp: new Date(baseMs + 10_000).toISOString(), eventType: 'ACCOUNT_REGISTER', eventIdempotencyKey: 'k_lb_1', ...bot, eventContext: { eventSaleId: saleId, deviceId: bot.deviceId, networkId: bot.networkId, paymentTokenHash: bot.paymentTokenHash } });
+    engine.evaluate({ eventId: 'lb_2', timestamp: new Date(baseMs + 10_150).toISOString(), eventType: 'QUEUE_JOIN', eventIdempotencyKey: 'k_lb_2', ...bot, eventContext: { eventSaleId: saleId, deviceId: bot.deviceId, networkId: bot.networkId, paymentTokenHash: bot.paymentTokenHash } });
+    const botGrant = engine.issueQueueGrant({ eventSaleId: saleId, accountId: bot.accountId, sessionId: bot.sessionId, issuedAtMs: baseMs + 10_150 });
+    const ckBot = engine.evaluate({ eventId: 'lb_3', timestamp: new Date(baseMs + 10_300).toISOString(), eventType: 'CHECKOUT_ATTEMPT', eventIdempotencyKey: 'k_lb_3', ...bot, eventContext: { eventSaleId: saleId, deviceId: bot.deviceId, networkId: bot.networkId, paymentTokenHash: bot.paymentTokenHash, queueGrant: botGrant } });
+
+    assert.notEqual(ckBot.decision, 'ALLOW');
+    assert.ok(ckBot.reasons.includes('UNSUPERVISED_BEHAVIORAL_ANOMALY'));
+    assert.ok(typeof ckBot.unsupervisedAnomalyScore === 'number' && ckBot.unsupervisedAnomalyScore > 50);
+    // Sample count must NOT increase from blocked/challenged bot
+    assert.equal(engine.getBaselineStats().sampleCount, initialSamples + 1);
+    assert.equal(engine.exportLiveTraces().length, 2);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

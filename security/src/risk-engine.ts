@@ -11,6 +11,12 @@ import {
 import { validateAndNormalizeEvent, type NormalizedSecurityEvent } from './events.ts';
 import { SessionBehaviorTracker } from './ml-features.ts';
 import { evaluateBehavioralMl, type MlInferenceResult } from './ml-scorer.ts';
+import {
+  UnsupervisedBaselineDetector,
+  type BaselineStatsSnapshot,
+  type UnsupervisedBaselineOptions,
+  type UnsupervisedEvaluationResult,
+} from './unsupervised-baseline.ts';
 import { evaluateAccountCreationRule } from './rules/account-creation.ts';
 import { ExpeditingGuard, type IssueQueueGrantParams } from './rules/expediting.ts';
 import {
@@ -24,6 +30,7 @@ export interface RiskEngineOptions {
   protectionsEnabled?: boolean;
   mlEnabled?: boolean;
   graphOptions?: AccountGraphOptions;
+  unsupervisedOptions?: UnsupervisedBaselineOptions;
   secret?: string;
 }
 
@@ -56,6 +63,7 @@ export class RiskEngine {
   readonly expediting: ExpeditingGuard;
   readonly auditLog: DecisionAuditLog;
   readonly behaviorTracker: SessionBehaviorTracker;
+  readonly unsupervisedDetector: UnsupervisedBaselineDetector;
 
   private readonly idempotencyCache = new Map<string, RiskDecision>();
   private totalEventsEvaluated = 0;
@@ -73,6 +81,15 @@ export class RiskEngine {
     this.expediting = new ExpeditingGuard(options.secret);
     this.auditLog = new DecisionAuditLog();
     this.behaviorTracker = new SessionBehaviorTracker();
+    this.unsupervisedDetector = new UnsupervisedBaselineDetector(options.unsupervisedOptions);
+  }
+
+  getBaselineStats(): BaselineStatsSnapshot {
+    return this.unsupervisedDetector.getBaselineSnapshot();
+  }
+
+  exportLiveTraces() {
+    return this.unsupervisedDetector.exportLiveTraces();
   }
 
   configureSale(
@@ -143,6 +160,7 @@ export class RiskEngine {
 
     const heuristicSignals: RuleSignal[] = [];
     let mlResult: MlInferenceResult | null = null;
+    let unsupervisedResult: UnsupervisedEvaluationResult | null = null;
     const features = this.behaviorTracker.recordAndExtract(event, cluster, saleState, inventoryResult);
     if (this.protectionsEnabled) {
       heuristicSignals.push(
@@ -155,6 +173,10 @@ export class RiskEngine {
         mlResult = evaluateBehavioralMl(features, event.eventId);
         if (mlResult.signal) {
           heuristicSignals.push(mlResult.signal);
+        }
+        unsupervisedResult = this.unsupervisedDetector.evaluate(features, event.eventId);
+        if (unsupervisedResult.signal) {
+          heuristicSignals.push(unsupervisedResult.signal);
         }
       }
     }
@@ -245,7 +267,22 @@ export class RiskEngine {
             mlTopContributors: mlResult.topContributors,
           }
         : {}),
+      ...(unsupervisedResult
+        ? {
+            unsupervisedAnomalyScore: unsupervisedResult.anomalyScore,
+          }
+        : {}),
     };
+
+    this.unsupervisedDetector.observeLiveDecision({
+      timestamp: event.timestamp,
+      accountId: event.accountId,
+      decision: finalDecision.decision,
+      riskScore: finalDecision.riskScore,
+      hardFailure: finalDecision.hardFailure,
+      isClustered: !cluster.isBenignHousehold && cluster.accountCount > 1,
+      features,
+    });
 
     this.recordAuditAndStats(
       event,
@@ -290,6 +327,9 @@ export class RiskEngine {
       clusterSummary: result.clusterSummary,
       supportingEventIds: result.supportingEventIds,
       ...(result.mlScore !== undefined ? { mlScore: result.mlScore } : {}),
+      ...(result.unsupervisedAnomalyScore !== undefined
+        ? { unsupervisedAnomalyScore: result.unsupervisedAnomalyScore }
+        : {}),
       ...(result.mlTopContributors !== undefined ? { mlTopContributors: result.mlTopContributors } : {}),
     });
   }

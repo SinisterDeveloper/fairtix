@@ -14,7 +14,8 @@ export type ReasonCode =
   | 'HOLD_LIMIT_EXCEEDED'
   | 'INVENTORY_EXHAUSTED'
   | 'CLUSTER_PURCHASE_LIMIT_EXCEEDED'
-  | 'ML_BEHAVIORAL_ANOMALY';
+  | 'ML_BEHAVIORAL_ANOMALY'
+  | 'UNSUPERVISED_BEHAVIORAL_ANOMALY';
 
 export const RISK_WEIGHTS: Readonly<Record<string, number>> = {
   ABNORMAL_RESERVATION_ABANDONMENT: 25,
@@ -52,6 +53,7 @@ export interface RiskDecision {
   clusterSummary?: ClusterSummary;
   supportingEventIds: string[];
   mlScore?: number;
+  unsupervisedAnomalyScore?: number;
   mlTopContributors?: Array<{
     feature: string;
     value: number;
@@ -81,6 +83,7 @@ export interface DecisionAuditRecord {
   clusterSummary?: ClusterSummary;
   supportingEventIds: string[];
   mlScore?: number;
+  unsupervisedAnomalyScore?: number;
   mlTopContributors?: Array<{
     feature: string;
     value: number;

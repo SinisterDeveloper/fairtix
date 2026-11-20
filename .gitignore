@@ -10,3 +10,5 @@ artifacts/volume-manifest.ndjson.gz
 web/.next/
 web/tsconfig.tsbuildinfo
 artifacts/security-events.ndjson
+artifacts/live-traces.ndjson
+artifacts/human-baseline.json
