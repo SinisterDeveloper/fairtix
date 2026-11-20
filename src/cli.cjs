@@ -74,27 +74,42 @@ function createExclusiveFileAtomic(destPath, content) {
 
 async function withWalletLock(address, fn, timeoutMs = 10_000) {
   const lockPath = getWalletLockPath(address);
+  const reclaimPath = `${lockPath}.reclaim`;
   const deadline = Date.now() + timeoutMs;
   while (true) {
     const payload = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
     if (createExclusiveFileAtomic(lockPath, payload)) {
       break;
     }
-    // Check if an existing lock belongs to a dead process and reclaim it safely.
-    try {
-      const st = statSync(lockPath);
-      const raw = readFileSync(lockPath, 'utf8');
-      const lockInfo = raw ? JSON.parse(raw) : {};
-      const ageMs = Date.now() - (lockInfo.createdAt || st.mtimeMs);
-      if ((lockInfo.pid && !isPidAlive(lockInfo.pid) && ageMs >= 100) || ageMs >= 30_000) {
-        const staleTmp = `${lockPath}.stale.${process.pid}.${Date.now()}`;
-        try {
-          renameSync(lockPath, staleTmp);
-          try { unlinkSync(staleTmp); } catch {}
-          continue;
-        } catch {}
+    // Serialize stale-lock inspection & removal via reclaimPath so two reclaimers
+    // cannot race and delete a newly-acquired live lock. Never reclaim a live PID.
+    if (createExclusiveFileAtomic(reclaimPath, payload)) {
+      try {
+        if (existsSync(lockPath)) {
+          const st = statSync(lockPath);
+          const raw = readFileSync(lockPath, 'utf8');
+          const lockInfo = raw ? JSON.parse(raw) : {};
+          const ageMs = Date.now() - (lockInfo.createdAt || st.mtimeMs);
+          if (lockInfo.pid && !isPidAlive(lockInfo.pid) && ageMs >= 100) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        }
+      } catch {
+        // Ignore transient read/unlink races; loop will retry.
+      } finally {
+        try { unlinkSync(reclaimPath); } catch {}
       }
-    } catch {}
+    } else {
+      // If a prior reclaimer itself crashed holding reclaimPath, clean it if its PID is dead.
+      try {
+        const rawR = readFileSync(reclaimPath, 'utf8');
+        const infoR = rawR ? JSON.parse(rawR) : {};
+        if (infoR.pid && !isPidAlive(infoR.pid)) {
+          unlinkSync(reclaimPath);
+        }
+      } catch {}
+    }
 
     if (Date.now() > deadline) {
       throw new Error(`Timed out acquiring wallet lock for ${address}`);
@@ -628,36 +643,41 @@ async function main() {
       });
     }
 
-    // Handle interrupted pre-journal gate claim (claimed <scanId>.json, crashed before journal write)
+    // Handle interrupted pre-journal gate claim (claimed <scanId>.json, crashed before journal write).
+    // Re-read the journal inside withWalletLock so a worker that wrote & exited after our initial
+    // snapshot cannot be misclassified as ABORTED_BEFORE_SEND.
     if (opts['scan-id']) {
       const scanId = opts['scan-id'];
       const claimPath = getGateClaimPath(scanId);
-      const hasJournalEntry = entries.some((e) => e.opId === scanId || e.meta?.scanId === scanId);
-      if (existsSync(claimPath) && !hasJournalEntry && !existsSync(getGateFinalPath(scanId))) {
-        const claimData = JSON.parse(readFileSync(claimPath, 'utf8'));
-        if (claimData.pid && isPidAlive(claimData.pid)) {
-          resumed.push({
-            opId: scanId,
-            txHash: null,
-            status: 'ACTIVE_WORKER',
-            gateDecision: null,
-            wonFinalization: false,
-          });
-        } else {
-          const fin = tryFinalizeGateDecision(scanId, {
-            decision: 'ABORTED_BEFORE_SEND',
-            status: 'ABORTED_BEFORE_SEND',
-            resumed: true,
-          });
-          resumed.push({
-            opId: scanId,
-            txHash: null,
-            status: 'NO_TX',
-            gateDecision: fin.wonFinalization ? 'ABORTED_BEFORE_SEND' : 'ALREADY_FINALIZED',
-            wonFinalization: fin.wonFinalization,
-          });
+      await withWalletLock(address, () => {
+        const freshEntries = readJournal(address);
+        const hasJournalEntry = freshEntries.some((e) => e.opId === scanId || e.meta?.scanId === scanId);
+        if (existsSync(claimPath) && !hasJournalEntry && !existsSync(getGateFinalPath(scanId))) {
+          const claimData = JSON.parse(readFileSync(claimPath, 'utf8'));
+          if (claimData.pid && isPidAlive(claimData.pid)) {
+            resumed.push({
+              opId: scanId,
+              txHash: null,
+              status: 'ACTIVE_WORKER',
+              gateDecision: null,
+              wonFinalization: false,
+            });
+          } else {
+            const fin = tryFinalizeGateDecision(scanId, {
+              decision: 'ABORTED_BEFORE_SEND',
+              status: 'ABORTED_BEFORE_SEND',
+              resumed: true,
+            });
+            resumed.push({
+              opId: scanId,
+              txHash: null,
+              status: 'NO_TX',
+              gateDecision: fin.wonFinalization ? 'ABORTED_BEFORE_SEND' : 'ALREADY_FINALIZED',
+              wonFinalization: fin.wonFinalization,
+            });
+          }
         }
-      }
+      });
     }
 
     console.log(JSON.stringify({ address, resumedCount: resumed.length, resumed }, null, 2));

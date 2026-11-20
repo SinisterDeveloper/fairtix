@@ -1087,12 +1087,18 @@ async function benchmark7(port) {
     const staleLockPath = join(root, 'artifacts', 'journal', `${gate.address.toLowerCase()}.lock`);
     writeFileSync(staleLockPath, JSON.stringify({ pid: 999999, createdAt: Date.now() - 500 }));
 
-    const { stdout: preJournalOut1 } = await execFileAsync(process.execPath, [
-      cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
-    ], { encoding: 'utf8' });
-    const pj1 = JSON.parse(preJournalOut1);
-    assert(pj1.resumedCount === 1 && pj1.resumed[0].gateDecision === 'ABORTED_BEFORE_SEND' && pj1.resumed[0].wonFinalization === true,
-      `Expected ABORTED_BEFORE_SEND after stale lock reclaim, got ${preJournalOut1}`);
+    // Race 4 concurrent `resume` processes competing to reclaim the same dead-PID lock
+    const reclaimRace = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        execFileAsync(process.execPath, [
+          cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
+        ], { encoding: 'utf8' })
+      )
+    );
+    const reclaimParsed = reclaimRace.map((r) => JSON.parse(r.stdout));
+    const abortedWins = reclaimParsed.filter((p) => p.resumed.some((x) => x.gateDecision === 'ABORTED_BEFORE_SEND' && x.wonFinalization === true));
+    assert(abortedWins.length === 1, `Expected exactly 1 ABORTED_BEFORE_SEND winner across 4 competing reclaimers, got ${abortedWins.length}`);
+
     const { stdout: preJournalOut2 } = await execFileAsync(process.execPath, [
       cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
     ], { encoding: 'utf8' });
