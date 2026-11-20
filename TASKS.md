@@ -244,7 +244,7 @@ web/
 - **Dev 2 (Next.js Backend & Frontend):**
 - [x] **L3-D2-1:** Added resume, withdrawal, and alerts endpoints; banners offer **Check / Resume** for uncertain gate operations.
 - [x] **L3-D2-2:** Added contract/hash, balances/credits, volume evidence, and a review-only alerts panel to `/organiser`.
-  - [ ] **L3-D2-3:** Apply any Hour 5 mentor feedback on UX clarity and error messaging.
+  - [x] **L3-D2-3:** Apply any Hour 5 mentor feedback on UX clarity and error messaging.
 
 **Loop 3 Sync (Hour 9):** Feature-complete demo; decide whether detection panel is stable for final judging.
 
