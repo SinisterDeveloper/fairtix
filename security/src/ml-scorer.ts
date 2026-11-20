@@ -79,7 +79,8 @@ export function evaluateBehavioralMl(
     const mean = model.means[i] ?? 0;
     const std = model.stds[i] && model.stds[i] > 0 ? model.stds[i] : 1;
     const weight = model.weights[i] ?? 0;
-    const standardized = (value - mean) / std;
+    // Neutralize raw HTTP asset-count shift when model comes from full-page crawls (e.g. Iliou logs)
+    const standardized = name === 'sessionEventCount' && mean > 20 ? 0 : (value - mean) / std;
     const contribution = weight * standardized;
     z += contribution;
     contributions.push({
@@ -98,8 +99,16 @@ export function evaluateBehavioralMl(
     .sort((a, b) => b.contribution - a.contribution)
     .slice(0, 3);
 
+  const hasCorroboratingBehavior =
+    features.interEventMeanMs < 600 ||
+    features.queueToReserveMs < 600 ||
+    features.reserveToCheckoutMs < 600 ||
+    features.interEventCv < 0.12 ||
+    features.clusterAccountCount > 1 ||
+    features.abandonmentRatio >= 0.35;
+
   let signal: RuleSignal | null = null;
-  if (features.sessionEventCount >= model.thresholds.minSessionEvents) {
+  if (features.sessionEventCount >= model.thresholds.minSessionEvents && hasCorroboratingBehavior) {
     if (probability >= model.thresholds.blockProbability) {
       signal = {
         rule: 'ML:behavioral-anomaly-detector',

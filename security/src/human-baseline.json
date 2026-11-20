@@ -1,29 +1,29 @@
 {
-  "source": "default_cold_start_until_kaggle_or_live_traces_loaded",
-  "sampleCount": 50,
+  "source": "kaggle_ecommerce_clickstream_colab",
+  "sampleCount": 76095,
   "means": {
-    "queueToReserveMs": 2400,
-    "reserveToCheckoutMs": 2600,
-    "interEventMeanMs": 2000,
-    "interEventCv": 0.38,
-    "eventsPerMinute": 28,
-    "abandonmentRatio": 0.03
+    "queueToReserveMs": 28011.28726,
+    "reserveToCheckoutMs": 28076.454806,
+    "interEventMeanMs": 28114.811354,
+    "interEventCv": 0.585483,
+    "eventsPerMinute": 2.11882,
+    "abandonmentRatio": 0.033388
   },
   "m2": {
-    "queueToReserveMs": 40500000,
-    "reserveToCheckoutMs": 50000000,
-    "interEventMeanMs": 24500000,
-    "interEventCv": 0.72,
-    "eventsPerMinute": 9800,
-    "abandonmentRatio": 0.32
+    "queueToReserveMs": 1627861214912.965,
+    "reserveToCheckoutMs": 1573465489138.1353,
+    "interEventMeanMs": 1476546634693.311,
+    "interEventCv": 11718.748336,
+    "eventsPerMinute": 254533.085208,
+    "abandonmentRatio": 2288.108905
   },
   "stds": {
-    "queueToReserveMs": 900,
-    "reserveToCheckoutMs": 1000,
-    "interEventMeanMs": 700,
-    "interEventCv": 0.12,
-    "eventsPerMinute": 14,
-    "abandonmentRatio": 0.08
+    "queueToReserveMs": 4625.231566,
+    "reserveToCheckoutMs": 4547.297874,
+    "interEventMeanMs": 4405.024995,
+    "interEventCv": 0.392433,
+    "eventsPerMinute": 1.828929,
+    "abandonmentRatio": 0.173406
   },
-  "updatedAt": "2026-11-21T00:00:00.000Z"
+  "updatedAt": "2026-11-20T22:57:27.523673+00:00"
 }

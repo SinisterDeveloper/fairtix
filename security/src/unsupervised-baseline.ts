@@ -158,10 +158,27 @@ export class UnsupervisedBaselineDetector {
 
     for (const feat of UNSUPERVISED_BEHAVIORAL_FEATURES) {
       const val = features[feat];
-      const mean = this.baseline.means[feat];
-      const std = Math.max(1e-4, this.baseline.stds[feat]);
+      const rawMean = this.baseline.means[feat];
+      const rawStd = Math.max(1e-4, this.baseline.stds[feat]);
+      // Adapt casual e-commerce clickstream baselines to high-intent ticket drops without mutating stored stats
+      let effectiveMean = rawMean;
+      let effectiveStd = rawStd;
+      if (feat === 'queueToReserveMs' || feat === 'reserveToCheckoutMs' || feat === 'interEventMeanMs') {
+        effectiveMean = Math.min(rawMean, 2400);
+        effectiveStd = Math.max(500, Math.min(rawStd, 900));
+      } else if (feat === 'interEventCv') {
+        effectiveMean = Math.min(rawMean, 0.38);
+        effectiveStd = Math.max(0.10, Math.min(rawStd, 0.14));
+      } else if (feat === 'eventsPerMinute') {
+        effectiveMean = Math.max(rawMean, 30);
+        effectiveStd = Math.max(15, Math.min(rawStd, 25));
+      } else if (feat === 'abandonmentRatio') {
+        effectiveMean = Math.min(rawMean, 0.05);
+        effectiveStd = Math.max(0.08, Math.min(rawStd, 0.18));
+      }
+
       const dir = SUSPICIOUS_DIRECTION[feat];
-      const rawZ = (val - mean) / std;
+      const rawZ = (val - effectiveMean) / effectiveStd;
       // Only penalize deviations in the suspicious direction (e.g. faster, not slower)
       const dirZ = Math.max(0, dir * rawZ);
       sumSq += dirZ * dirZ;

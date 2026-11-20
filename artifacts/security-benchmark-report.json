@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-20T21:33:47.503Z",
+  "generatedAt": "2026-11-20T23:02:19.070Z",
   "simulation": true,
   "eventSaleId": "concert_ibm_benchmark_v1",
   "capacity": 80,
@@ -18,7 +18,7 @@
     {
       "target": "Inventory abuse",
       "expected": "Every expired hold releases inventory exactly once",
-      "observed": "15/15 restored once (30 duplicate release events ignored)",
+      "observed": "30/30 restored once (30 duplicate release events ignored)",
       "passed": true
     },
     {
@@ -186,8 +186,8 @@
     "ticketsSold": 80,
     "oversoldTickets": 0,
     "availableInventoryAtEnd": 0,
-    "expiredHoldsTotal": 15,
-    "exactOnceRestorations": 15,
+    "expiredHoldsTotal": 30,
+    "exactOnceRestorations": 30,
     "duplicateReleaseAttemptsIgnored": 30,
     "unauthorizedBypassAttempts": 20,
     "unauthorizedCheckoutsSucceeded": 0,
@@ -221,7 +221,7 @@
         "groundTruthMalicious": true,
         "participantsTotal": 15,
         "flaggedForSecurity": 15,
-        "challengedCount": 0,
+        "challengedCount": 15,
         "blockedCount": 15,
         "hardFailedCount": 15,
         "ticketsAcquired": 0
@@ -271,8 +271,8 @@
         "groundTruthMalicious": true,
         "participantsTotal": 5,
         "flaggedForSecurity": 5,
-        "challengedCount": 0,
-        "blockedCount": 5,
+        "challengedCount": 5,
+        "blockedCount": 0,
         "hardFailedCount": 0,
         "ticketsAcquired": 0
       },
