@@ -11,6 +11,7 @@ const { startAnvil } = require('../src/anvil.cjs');
 const execFileAsync = promisify(execFile);
 
 const root = path.resolve(__dirname, '..');
+const { chromium } = require(path.join(root, 'web', 'node_modules', 'playwright'));
 const cli = path.join(root, 'src', 'cli.cjs');
 const nextBin = path.join(root, 'web', 'node_modules', 'next', 'dist', 'bin', 'next');
 const facePrice = 50_000_000_000_000_000n;
@@ -130,6 +131,7 @@ async function main() {
   let anvil;
   let proxy;
   let server;
+  let browser;
   let proxyPort;
   const serverPort = await freePort();
   try {
@@ -159,6 +161,26 @@ async function main() {
       const pageResponse = await fetch(`${server.base}${page}`);
       check(pageResponse.status === 200, `${page} page renders`);
     }
+
+    browser = await chromium.launch({ headless: true });
+    const ui = await browser.newPage();
+    await ui.goto(`${server.base}/fan`);
+    const rolePicker = ui.getByLabel('Active demo role');
+    const enterButton = ui.getByRole('button', { name: 'Enter event' });
+    check(await enterButton.isEnabled(), 'fan actions are available to the selected fan role');
+    await rolePicker.selectOption('organiser');
+    check(await enterButton.isDisabled() && await ui.getByText('Choose Fan A or Fan B in the role selector to use fan actions.').isVisible(), 'fan actions are disabled when an organiser role is selected');
+    await ui.reload();
+    check(await rolePicker.inputValue() === 'organiser' && await enterButton.isDisabled(), 'selected role survives a browser refresh');
+    await rolePicker.selectOption('fanB');
+    await ui.reload();
+    check(await rolePicker.inputValue() === 'fanB' && await enterButton.isEnabled(), 'switching back to a fan restores actions after refresh');
+    await ui.evaluate(() => localStorage.setItem('fairtickets-credentials', JSON.stringify([{ contract: '0x1234', editionId: '0x5678', slot: 1, version: 1, expiry: 2, ownerSig: '0xabcd', label: 'Fan A · v1' }])));
+    await ui.goto(`${server.base}/gate`);
+    await ui.getByLabel('Saved credential').selectOption('0');
+    check((await ui.getByLabel('Credential JSON').inputValue()).includes('0xabcd'), 'gate loads a saved browser credential');
+    await ui.reload();
+    check(await ui.getByLabel('Saved credential').inputValue() === '0' && (await ui.getByLabel('Credential JSON').inputValue()).includes('Fan A · v1'), 'credential tray survives route and browser refresh');
 
     const a = await postJson(server.base, 'enter', { role: 'fanA', subject: 'e2e-fan-a' });
     const b = await postJson(server.base, 'enter', { role: 'fanB', subject: 'e2e-fan-b' });
@@ -243,6 +265,8 @@ async function main() {
     await stopChild(server.proc);
     server = startNext(serverPort, stateDir);
     await waitForPage(server.base, server.proc, server.logs);
+    await ui.reload();
+    check(await ui.getByLabel('Saved credential').inputValue() === '0', 'credential tray survives a Next.js server restart');
     const afterRestart = await (await fetch(`${server.base}/api/status`, { cache: 'no-store' })).json();
     check(afterRestart.contract === deployed.contract && afterRestart.editionId === deployed.editionId, 'Next.js restart preserves demo contract state');
 
@@ -253,6 +277,7 @@ async function main() {
 
     process.stdout.write('\nIntegration summary: all web/API lifecycle, recovery, money, and restart checks passed.\n');
   } finally {
+    if (browser) await browser.close();
     if (server) await stopChild(server.proc);
     if (proxy) {
       proxy.server.closeAllConnections?.();

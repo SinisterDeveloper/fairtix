@@ -259,8 +259,8 @@ web/
   - [ ] **L4-D1-3 (13–15h):** Rehearse pitch + on-chain hash/balance verification; record backup video.
 
 - **Dev 2 (Next.js Backend & Frontend):**
-  - [x] **L4-D2-1 (9–11h):** Automated clean deployment/API boot, server restart persistence, and disconnect/resume recovery coverage passes. UI pages are also checked for successful HTTP rendering.
-  - [ ] **L4-D2-2 (11–13h):** Freeze UI/API features at Hour 11; polish presentation-critical defects only.
+  - [x] **L4-D2-1 (9–11h):** Automated clean deployment/API boot, browser role and credential-tray persistence across refresh and server restart, and disconnect/resume recovery coverage passes.
+  - [x] **L4-D2-2 (11–13h):** Froze the UI/API feature set after the role-action guard and automated browser/API integration coverage passed.
   - [ ] **L4-D2-3 (13–15h):** Rehearse Fan A, Fan B, Organiser, and Gate demo click-path without resetting the judging chain.
 
 ---
