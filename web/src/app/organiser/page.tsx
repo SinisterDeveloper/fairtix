@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
-import { formatUnixTime, formatWeiToEth, shortAddress } from '@/lib/format';
+import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
 import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 type AlertsPayload = { ok?: boolean; alerts?: AlertItem[]; error?: string };
@@ -153,13 +153,13 @@ export default function OrganiserPage() {
             </div>
             <div className="metric">
               <span>Face price</span>
-              <strong>{formatWeiToEth(status.facePriceWei)}</strong>
-              <small>{status.facePriceWei} wei</small>
+              <strong>{formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)}</strong>
+              <small>INR ticket face value</small>
             </div>
             <div className="metric">
               <span>Max resale cap</span>
-              <strong>{formatWeiToEth(status.maxResalePriceWei)}</strong>
-              <small>{status.maxResalePriceWei} wei</small>
+              <strong>{formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr)}</strong>
+              <small>Enforced 100% cap</small>
             </div>
           </div>
         ) : (
@@ -203,9 +203,9 @@ export default function OrganiserPage() {
                 </dd>
               </div>
               <div>
-                <dt>Contract balance</dt>
+                <dt>Escrow balance</dt>
                 <dd>
-                  <strong>{formatWeiToEth(status.balanceWei)}</strong> ({status.balanceWei} wei)
+                  <strong>{formatWeiToInr(status.balanceWei, status.facePriceWei, status.facePriceInr)}</strong>
                 </dd>
               </div>
             </dl>
@@ -265,7 +265,7 @@ export default function OrganiserPage() {
                 <tr>
                   <th>Role</th>
                   <th>Address</th>
-                  <th>ETH Balance</th>
+                  <th>Wallet Balance (INR)</th>
                   <th>Withdrawable Credit</th>
                 </tr>
               </thead>
@@ -278,10 +278,9 @@ export default function OrganiserPage() {
                     <td>
                       <code title={r.address}>{shortAddress(r.address)}</code>
                     </td>
-                    <td>{formatWeiToEth(r.ethBalanceWei)}</td>
+                    <td>{formatWeiToInr(r.ethBalanceWei, status?.facePriceWei, status?.facePriceInr)}</td>
                     <td>
-                      <strong>{formatWeiToEth(r.withdrawableWei)}</strong>{' '}
-                      <span className="meta">({r.withdrawableWei} wei)</span>
+                      <strong>{formatWeiToInr(r.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}</strong>
                     </td>
                   </tr>
                 ))}

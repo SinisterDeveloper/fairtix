@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
-import { formatWeiToEth, shortAddress } from '@/lib/format';
+import { formatWeiToInr, inrToWei, shortAddress } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export default function FanPage() {
@@ -12,7 +12,7 @@ export default function FanPage() {
   const [subject, setSubject] = useState('fan-a-subject');
   const [slot, setSlot] = useState('1');
   const [version, setVersion] = useState('1');
-  const [price, setPrice] = useState('180000');
+  const [price, setPrice] = useState('2400');
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [tray, setTray] = useState<Array<Record<string, unknown>>>([]);
   const [statusError, setStatusError] = useState('');
@@ -102,14 +102,9 @@ export default function FanPage() {
   }
 
   function applyPriceRatio(numerator: number, denominator: number) {
-    const baseStr = status?.maxResalePriceWei || status?.facePriceWei;
-    if (!baseStr) return;
-    try {
-      const val = (BigInt(baseStr) * BigInt(numerator)) / BigInt(denominator);
-      setPrice(val.toString());
-    } catch {
-      // Ignore parse errors
-    }
+    const baseInr = status?.facePriceInr || 3000;
+    const val = Math.round((baseInr * numerator) / denominator);
+    setPrice(String(val));
   }
 
   const activeAccount = status?.roles?.[role];
@@ -140,7 +135,7 @@ export default function FanPage() {
                 : isWinner
                   ? 'Selected in draw — ready to claim'
                   : 'No ticket held'}
-              {' · '}Withdrawable: {formatWeiToEth(activeAccount?.withdrawableWei)}
+              {' · '}Withdrawable: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
             </span>
           )}
         </div>
@@ -193,8 +188,9 @@ export default function FanPage() {
             )}
           </div>
           <p>
-            Winners claim at face price ({status ? formatWeiToEth(status.facePriceWei) : '—'}). During
-            resale, holders can list at or below the on-chain cap.
+            Winners claim at face price (
+            {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
+            ). During resale, holders can list at or below the on-chain cap.
           </p>
 
           {activeListings.length > 0 && (
@@ -203,7 +199,8 @@ export default function FanPage() {
               {activeListings.map((t) => (
                 <div key={t.slot} className="listing-row">
                   <span>
-                    Slot #{t.slot} (v{t.version}) · {formatWeiToEth(t.resalePriceWei)}
+                    Slot #{t.slot} (v{t.version}) ·{' '}
+                    {formatWeiToInr(t.resalePriceWei, status?.facePriceWei, status?.facePriceInr)}
                   </span>
                   <button
                     type="button"
@@ -211,7 +208,8 @@ export default function FanPage() {
                     onClick={() => {
                       setSlot(String(t.slot));
                       setVersion(String(t.version));
-                      setPrice(t.resalePriceWei);
+                      const inrLabel = formatWeiToInr(t.resalePriceWei, status?.facePriceWei, status?.facePriceInr).replace(/[₹,\s]/g, '');
+                      setPrice(inrLabel || '2400');
                     }}
                   >
                     Fill listing
@@ -233,7 +231,7 @@ export default function FanPage() {
           </div>
 
           <label>
-            Price in wei
+            Resale price (INR)
             <input value={price} onChange={(e) => setPrice(e.target.value)} />
           </label>
 
@@ -272,7 +270,11 @@ export default function FanPage() {
               disabled={!isFan || busy}
               className="secondary"
               onClick={() =>
-                void act('list', { slot: Number(slot), version: Number(version), priceWei: price })
+                void act('list', {
+                  slot: Number(slot),
+                  version: Number(version),
+                  priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                })
               }
             >
               List for resale
@@ -281,7 +283,11 @@ export default function FanPage() {
               disabled={!isFan || busy}
               className="secondary"
               onClick={() =>
-                void act('buy', { slot: Number(slot), version: Number(version), priceWei: price })
+                void act('buy', {
+                  slot: Number(slot),
+                  version: Number(version),
+                  priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                })
               }
             >
               Buy listing
@@ -289,8 +295,10 @@ export default function FanPage() {
           </div>
           <p>
             Max resale price:{' '}
-            <strong>{status ? formatWeiToEth(status.maxResalePriceWei) : '—'}</strong> (
-            {status?.maxResalePriceWei ?? '—'} wei).
+            <strong>
+              {status ? formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
+            </strong>
+            . Try a higher INR amount (for example 30000) to see the cap enforced.
           </p>
         </article>
 
@@ -379,10 +387,10 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
                     <code title={t.owner}>{resolveRoleLabel(status, t.owner)}</code>
                   </td>
                   <td>v{t.version}</td>
-                  <td>{formatWeiToEth(t.paidPriceWei)}</td>
+                  <td>{formatWeiToInr(t.paidPriceWei, status.facePriceWei, status.facePriceInr)}</td>
                   <td>
                     {t.listed
-                      ? `${formatWeiToEth(t.resalePriceWei)} (${t.resalePriceWei} wei)`
+                      ? formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr)
                       : 'Not listed'}
                   </td>
                   <td>{t.admitted ? 'Yes' : 'No'}</td>

@@ -871,6 +871,8 @@ async function main() {
           capacity,
           facePriceWei: (await c.facePrice()).toString(),
           maxResalePriceWei: (await c.facePrice()).toString(),
+          displayCurrency: 'INR',
+          facePriceInr: 3000,
           winners: winners.map((w) => w.toLowerCase()),
           tickets,
           roles,

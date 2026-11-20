@@ -317,7 +317,7 @@ async function main() {
     uiResult = await clickUiAction(journey, 'Sign and save credential', 'credential/sign');
     check(uiResult.status === 200 && uiResult.body.credential.version === 1, 'seller saves a browser v1 gate credential');
     await cliJson(['advance-time', '--seconds', '301'], stateDir);
-    await journey.getByLabel('Price in wei').fill(resalePrice.toString());
+    await journey.getByLabel('Resale price (INR)').fill('2400');
     uiResult = await clickUiAction(journey, 'List for resale', 'list');
     check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'seller lists the ticket from the browser');
     await journey.getByLabel('Active demo role').selectOption(uiBuyer);

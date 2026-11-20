@@ -5,6 +5,51 @@ export function shortAddress(address?: string | null): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
+const DEFAULT_FACE_PRICE_WEI = '50000000000000000';
+const DEFAULT_FACE_PRICE_INR = 3000;
+
+export function formatWeiToInr(
+  wei?: string | number | bigint | null,
+  facePriceWei?: string | number | bigint | null,
+  facePriceInr = DEFAULT_FACE_PRICE_INR,
+): string {
+  if (wei === undefined || wei === null || wei === '') return '—';
+  try {
+    const value = BigInt(wei);
+    const refWei = BigInt(facePriceWei || DEFAULT_FACE_PRICE_WEI);
+    if (refWei <= BigInt(0)) return '—';
+    const refInr = BigInt(Math.max(1, Math.round(facePriceInr)));
+    const negative = value < BigInt(0);
+    const abs = negative ? -value : value;
+    const totalPaise = (abs * refInr * BigInt(100) + refWei / BigInt(2)) / refWei;
+    const rupees = totalPaise / BigInt(100);
+    const paise = Number(totalPaise % BigInt(100));
+    const formattedRupees = rupees.toLocaleString('en-IN');
+    const prefix = negative ? '-₹' : '₹';
+    if (paise === 0) return `${prefix}${formattedRupees}`;
+    return `${prefix}${formattedRupees}.${String(paise).padStart(2, '0')}`;
+  } catch {
+    return '—';
+  }
+}
+
+export function inrToWei(
+  inrInput: string | number,
+  facePriceWei?: string | number | bigint | null,
+  facePriceInr = DEFAULT_FACE_PRICE_INR,
+): string {
+  const cleaned = String(inrInput ?? '').replace(/[₹,\s]/g, '').trim();
+  if (!cleaned) return '0';
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(cleaned);
+  if (!match) return '0';
+  const whole = BigInt(match[1]);
+  const frac = BigInt((match[2] || '').padEnd(2, '0'));
+  const paise = whole * BigInt(100) + frac;
+  const refWei = BigInt(facePriceWei || DEFAULT_FACE_PRICE_WEI);
+  const refPaise = BigInt(Math.max(1, Math.round(facePriceInr))) * BigInt(100);
+  return ((paise * refWei) / refPaise).toString();
+}
+
 export function formatWeiToEth(wei?: string | number | bigint | null, maxDecimals = 6): string {
   if (wei === undefined || wei === null || wei === '') return '—';
   try {
