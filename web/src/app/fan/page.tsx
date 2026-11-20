@@ -144,6 +144,16 @@ export default function FanPage() {
   const allocationInfo = describeAllocation(status);
   const enteredInfo = status?.contract ? enteredByContract[status.contract.toLowerCase()]?.[role] : undefined;
 
+  useEffect(() => {
+    if (heldTicket) {
+      setSlot(String(heldTicket.slot));
+      setVersion(String(heldTicket.version));
+    } else if (activeListings.length > 0) {
+      setSlot(String(activeListings[0].slot));
+      setVersion(String(activeListings[0].version));
+    }
+  }, [role, heldTicket?.slot, heldTicket?.version, activeListings[0]?.slot, activeListings[0]?.version]);
+
   const fanQueueStatus = !status
     ? 'Loading chain state…'
     : heldTicket
@@ -188,6 +198,47 @@ export default function FanPage() {
         <p className="role-warning" role="status">
           Choose Fan A or Fan B in the role selector to use fan actions.
         </p>
+      )}
+      {isFan && status && (
+        <div className="flow-callout">
+          <span>
+            {phase.includes('ENTRY')
+              ? enteredInfo
+                ? 'Entry confirmed in queue. Switch to the other fan to enter, or open Organiser to close entry.'
+                : 'Entry is open — click "Enter event" below to join the ticket queue.'
+              : phase.includes('DRAW')
+                ? 'Entry is closed. Go to Organiser to lock allocation and finalize reservations.'
+                : phase.includes('CLAIM')
+                  ? isWinner && !heldTicket
+                    ? 'You have a reservation! Click "Claim reserved ticket" below.'
+                    : heldTicket
+                      ? 'Ticket claimed! Sign a v1 gate pass now, or advance to Resale on Organiser.'
+                      : 'No reservation for this role. Switch to the reserved fan or advance to Resale.'
+                  : phase.includes('RESALE')
+                    ? heldTicket && !heldTicket.listed
+                      ? 'You hold a ticket — test 120% (rejected) or list at 80%/100% for resale.'
+                      : !heldTicket && activeListings.length > 0
+                        ? 'A resale listing is live! Click "Buy listing" to purchase at the capped price.'
+                        : heldTicket
+                          ? 'Ticket listed or updated — sign a gate pass for your current version, then advance to Gate.'
+                          : 'Resale window is open.'
+                    : phase.includes('GATE')
+                      ? heldTicket
+                        ? 'Venue Gate is open! Sign a pass for your current version, then open Gate to redeem.'
+                        : 'Venue Gate is open — take a saved pass to the Gate tab.'
+                      : 'Event closed. Withdraw any remaining proceeds below.'}
+          </span>
+          {(phase.includes('DRAW') || (phase.includes('CLAIM') && heldTicket) || (phase.includes('RESALE') && heldTicket)) && (
+            <Link className="small-link" href="/organiser">
+              Open Organiser →
+            </Link>
+          )}
+          {phase.includes('GATE') && (
+            <Link className="small-link" href="/gate">
+              Open Gate Scanner →
+            </Link>
+          )}
+        </div>
       )}
       {statusError && (
         <p className="role-warning" role="alert">
@@ -345,12 +396,16 @@ export default function FanPage() {
           )}
 
           <div className="actions">
-            <button disabled={!isFan || busy} onClick={() => void act('claim')}>
+            <button
+              disabled={!isFan || busy}
+              className={phase.includes('CLAIM') && isWinner && !heldTicket ? '' : 'secondary'}
+              onClick={() => void act('claim')}
+            >
               Claim reserved ticket
             </button>
             <button
               disabled={!isFan || busy}
-              className="secondary"
+              className={phase.includes('RESALE') && heldTicket && !heldTicket.listed ? '' : 'secondary'}
               onClick={() =>
                 void act('list', {
                   slot: Number(slot),
@@ -363,7 +418,7 @@ export default function FanPage() {
             </button>
             <button
               disabled={!isFan || busy}
-              className="secondary"
+              className={phase.includes('RESALE') && !heldTicket && activeListings.length > 0 ? '' : 'secondary'}
               onClick={() =>
                 void act('buy', {
                   slot: Number(slot),
@@ -429,6 +484,25 @@ export default function FanPage() {
                 })}
               </ul>
               <div className="preset-row" style={{ marginTop: 10 }}>
+                {status?.contract &&
+                  tray.some(
+                    (c) => c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase(),
+                  ) && (
+                    <button
+                      type="button"
+                      className="secondary small-btn"
+                      onClick={() => {
+                        const filtered = tray.filter(
+                          (c) =>
+                            String(c.contract || '').toLowerCase() === status.contract.toLowerCase(),
+                        );
+                        setTray(filtered);
+                        localStorage.setItem('fairtickets-credentials', JSON.stringify(filtered));
+                      }}
+                    >
+                      Clear old-event passes
+                    </button>
+                  )}
                 <button
                   type="button"
                   className="secondary small-btn"

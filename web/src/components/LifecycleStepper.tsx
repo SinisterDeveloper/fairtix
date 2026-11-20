@@ -1,13 +1,15 @@
 'use client';
 
+import Link from 'next/link';
+
 type ContextPage = 'fan' | 'gate' | 'organiser';
 
 const STEPS = [
-  { key: 'ENTRY', label: '1. Join Queue', sub: 'Fans enter once' },
-  { key: 'DRAW', label: '2. Finalize', sub: 'Queue / batch lottery' },
-  { key: 'CLAIM', label: '3. Claim Ticket', sub: 'Buy at face price' },
-  { key: 'RESALE', label: '4. Capped Resale', sub: 'Optional <= cap trade' },
-  { key: 'GATE', label: '5. Venue Gate', sub: 'One-time check-in' },
+  { key: 'ENTRY', label: '1. Join Queue', sub: 'Fans enter once', href: '/fan' },
+  { key: 'DRAW', label: '2. Finalize', sub: 'Queue / batch lottery', href: '/organiser' },
+  { key: 'CLAIM', label: '3. Claim Ticket', sub: 'Buy at face price', href: '/fan' },
+  { key: 'RESALE', label: '4. Capped Resale', sub: 'Optional <= cap trade', href: '/fan' },
+  { key: 'GATE', label: '5. Venue Gate', sub: 'One-time check-in', href: '/gate' },
 ] as const;
 
 function stepIndex(phase?: string): number {
@@ -75,8 +77,10 @@ export default function LifecycleStepper({
                   : 'upcoming';
           return (
             <li key={step.key} className={`step ${state}`}>
-              <span className="step-title">{step.label}</span>
-              <span className="step-sub">{step.sub}</span>
+              <Link href={step.href} className="step-link">
+                <span className="step-title">{step.label}</span>
+                <span className="step-sub">{step.sub}</span>
+              </Link>
             </li>
           );
         })}

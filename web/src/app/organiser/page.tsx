@@ -73,6 +73,23 @@ export default function OrganiserPage() {
   const reconciled = status ? contractBalanceWei === totalCreditsWei : false;
   const alerts = Array.isArray(alertsData?.alerts) ? alertsData.alerts : [];
   const allocationInfo = describeAllocation(status);
+  const phase = status?.phase?.toUpperCase() || '';
+  const activeStep = !status
+    ? 0
+    : phase.includes('ENTRY') || (phase.includes('DRAW') && !status.drawLocked)
+      ? 1
+      : phase.includes('DRAW') && status.drawLocked && !status.drawn
+        ? 2
+        : phase.includes('CLAIM') || phase.includes('RESALE')
+          ? 3
+          : phase.includes('GATE') || phase.includes('CLOSED')
+            ? 4
+            : 0;
+  const nextPhaseHint = phase.includes('CLAIM')
+    ? 'Currently in CLAIM → click to open RESALE'
+    : phase.includes('RESALE')
+      ? 'Currently in RESALE → click to open GATE'
+      : '3. Fast-forwards the demo clock (Claim → Resale → Gate).';
 
   return (
     <main className="page">
@@ -125,8 +142,12 @@ export default function OrganiserPage() {
           </button>
         </div>
         <div className="step-actions">
-          <div className="step-action">
-            <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
+          <div className={`step-action ${activeStep === 1 ? 'step-action-active' : ''}`}>
+            <button
+              disabled={busy}
+              className={activeStep === 1 ? '' : 'secondary'}
+              onClick={() => void act('organiser/advance-and-lock')}
+            >
               Close entry and lock allocation
             </button>
             <small className="meta">
@@ -134,8 +155,12 @@ export default function OrganiserPage() {
               an oversubscribed batch needs a lottery).
             </small>
           </div>
-          <div className="step-action">
-            <button disabled={busy} onClick={() => void act('organiser/draw')}>
+          <div className={`step-action ${activeStep === 2 ? 'step-action-active' : ''}`}>
+            <button
+              disabled={busy}
+              className={activeStep === 2 ? '' : 'secondary'}
+              onClick={() => void act('organiser/draw')}
+            >
               Finalize reservations
             </button>
             <small className="meta">
@@ -143,20 +168,22 @@ export default function OrganiserPage() {
               legacy editions).
             </small>
           </div>
-          <div className="step-action">
+          <div className={`step-action ${activeStep === 3 ? 'step-action-active' : ''}`}>
             <button
               disabled={busy}
-              className="secondary"
+              className={activeStep === 3 ? '' : 'secondary'}
               onClick={() => void act('organiser/advance-time', { seconds: 301 })}
             >
               Advance to next phase (+5m)
             </button>
-            <small className="meta">
-              3. Fast-forwards the demo clock (Claim → Resale → Gate).
-            </small>
+            <small className="meta">{nextPhaseHint}</small>
           </div>
-          <div className="step-action">
-            <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
+          <div className={`step-action ${activeStep === 4 ? 'step-action-active' : ''}`}>
+            <button
+              disabled={busy}
+              className={activeStep === 4 ? '' : 'secondary'}
+              onClick={() => void act('withdraw')}
+            >
               Withdraw proceeds
             </button>
             <small className="meta">
