@@ -21,17 +21,113 @@ function logActivity(event) {
 
 function classifyErrorCode(message, command) {
   const reason = String(message || '').toLowerCase();
-  if (reason.includes('cap')) return 'RESALE_CAP_EXCEEDED';
-  if (reason.includes('version mismatch') || reason.includes('stale credential')) return 'STALE_CREDENTIAL';
-  if (reason.includes('already admitted')) return 'ALREADY_ADMITTED';
-  if (reason.includes('scan id') && (reason.includes('claimed') || reason.includes('finalized'))) return 'ALREADY_ADMITTED';
-  if (reason.includes('already claimed')) return 'ALREADY_CLAIMED';
+  if (reason.includes('price exceeds cap') || reason.includes('exceeds cap')) return 'RESALE_CAP_EXCEEDED';
+  if (reason.includes('already admitted') || (reason.includes('scan id') && (reason.includes('claimed') || reason.includes('finalized')))) {
+    return 'ALREADY_ADMITTED';
+  }
+  if (
+    reason.includes('version mismatch') ||
+    reason.includes('invalid expiry') ||
+    reason.includes('attestation expired') ||
+    reason.includes('stale credential')
+  ) {
+    return 'STALE_CREDENTIAL';
+  }
+  if (
+    reason.includes('not in gate window') ||
+    reason.includes('not in resale window') ||
+    reason.includes('claim window closed') ||
+    reason.includes('entry closed') ||
+    reason.includes('entry still open') ||
+    reason.includes('draw already started') ||
+    reason.includes('draw already locked') ||
+    reason.includes('already drawn') ||
+    reason.includes('draw not locked') ||
+    reason.includes('draw not completed') ||
+    reason.includes('target block not reached') ||
+    reason.includes('draw window missed') ||
+    reason.includes('zero target hash') ||
+    reason.includes('wrong phase')
+  ) {
+    return 'WRONG_PHASE';
+  }
+  if (
+    reason.includes('invalid owner signature') ||
+    reason.includes('invalid signature') ||
+    reason.includes('invalid attestation') ||
+    reason.includes('only gate') ||
+    reason.includes('ticket not issued') ||
+    reason.includes('ecdsa') ||
+    (command === 'redeem' && (reason.includes('invalid byteslike') || reason.includes('missing --owner-sig') || reason.includes('signature')))
+  ) {
+    return 'FORGED_CREDENTIAL';
+  }
   if (reason.includes('not a winner')) return 'NOT_WINNER';
-  if (reason.includes('listing not active') || reason.includes('already listed')) return 'LISTING_NOT_ACTIVE';
+  if (reason.includes('already claimed')) return 'ALREADY_CLAIMED';
+  if (reason.includes('listing not active') || reason.includes('already listed') || reason.includes('seller no longer owner')) {
+    return 'LISTING_NOT_ACTIVE';
+  }
   if (reason.includes('incorrect payment') || reason.includes('price mismatch')) return 'INSUFFICIENT_PAYMENT';
-  if (reason.includes('signature') || reason.includes('only gate') || reason.includes('ticket not issued') || command === 'redeem') return 'FORGED_CREDENTIAL';
-  if (reason.includes('phase') || reason.includes('window') || reason.includes('entry closed') || reason.includes('draw')) return 'WRONG_PHASE';
+  if (isRpcRecoverableError({ message })) return 'RPC_TIMEOUT';
   return 'INTERNAL_ERROR';
+}
+
+function normalizeScanId(rawScanId) {
+  if (typeof rawScanId !== 'string' || !rawScanId.trim()) {
+    return ethers.hexlify(ethers.randomBytes(32));
+  }
+  const trimmed = rawScanId.trim();
+  if (/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return ethers.id(trimmed);
+}
+
+function extractRevertReason(err) {
+  const data = typeof err?.rpcError?.data === 'string' ? err.rpcError.data : null;
+  if (data && data.startsWith('0x')) {
+    if (data.startsWith('0x08c379a0') && data.length >= 138) {
+      try {
+        const [decoded] = ethers.AbiCoder.defaultAbiCoder().decode(['string'], '0x' + data.slice(10));
+        if (decoded) return String(decoded);
+      } catch {}
+    }
+    if (data.startsWith('0xf645eedf') || data.startsWith('0xfce698f7') || data.startsWith('0xd78bce0c')) {
+      return 'Invalid owner signature (ECDSA)';
+    }
+    if (data.startsWith('0x4e487b71') && data.length >= 74) {
+      try {
+        const [code] = ethers.AbiCoder.defaultAbiCoder().decode(['uint256'], '0x' + data.slice(10));
+        return `Contract panic (0x${BigInt(code).toString(16)})`;
+      } catch {}
+    }
+  }
+  const rawMsg = String(err?.message || 'Contract execution reverted');
+  const lower = rawMsg.toLowerCase();
+  if (lower.includes('0xf645eedf') || lower.includes('0xfce698f7') || lower.includes('0xd78bce0c') || lower.includes('ecdsainvalidsignature')) {
+    return 'Invalid owner signature (ECDSA)';
+  }
+  const stripped = rawMsg.replace(/^(?:eth_call:\s*)?(?:execution reverted:\s*)?(?:revert:\s*)?/i, '').trim();
+  return stripped || 'Contract execution reverted';
+}
+
+function isRpcRecoverableError(err) {
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return true;
+  const message = [
+    err?.message,
+    err?.cause?.message,
+    err?.cause?.code,
+    err?.code,
+    typeof err === 'string' ? err : '',
+  ].filter(Boolean).join(' ');
+  return /receipt timeout|timed out|timeout|fetch failed|failed to detect network|econnrefused|econnreset|etimedout|enotfound|socket|network|connection reset|missing rpc response|rpc http 5\d\d|timed out acquiring wallet lock/i.test(message);
+}
+
+function makeProvider(rpcUrl, chainId = null) {
+  if (chainId != null) {
+    return new ethers.JsonRpcProvider(rpcUrl, chainId, { staticNetwork: ethers.Network.from(chainId) });
+  }
+  return new ethers.JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true });
 }
 
 function activitySubject(opts) {
@@ -338,42 +434,37 @@ async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_
       timestamp: new Date().toISOString(),
     });
 
-    await rpc('eth_sendRawTransaction', [signed]);
+    try {
+      await rpc('eth_sendRawTransaction', [signed]);
+    } catch (err) {
+      if (err && typeof err === 'object') err.txHash = hash;
+      throw err;
+    }
     return { txHash: hash };
   });
 
-  const receipt = await waitForReceipt(rpc, txHash);
+  let receipt;
+  try {
+    receipt = await waitForReceipt(rpc, txHash);
+  } catch (err) {
+    if (err && typeof err === 'object') err.txHash = txHash;
+    throw err;
+  }
   if (receipt.status !== '0x1') {
     try {
-      await rpc('eth_call', [{ from: wallet.address, to: to || receipt.contractAddress, data, value: ethers.toQuantity(value) }, 'latest']);
+      await rpc('eth_call', [{ from: wallet.address, to: to || receipt.contractAddress, data, value: ethers.toQuantity(value) }, receipt.blockNumber || 'latest']);
     } catch (err) {
-      receipt.revertReason = err.message || 'Contract execution reverted';
+      receipt.revertReason = extractRevertReason(err);
     }
   }
   await updateJournalEntry(wallet.address, txHash, {
     status: receipt.status === '0x1' ? 'CONFIRMED' : 'REVERTED',
     blockNumber: Number(BigInt(receipt.blockNumber)),
     gasUsed: Number(BigInt(receipt.gasUsed)),
+    revertReason: receipt.revertReason || null,
     confirmedAt: new Date().toISOString(),
   });
   return { txHash, receipt };
-}
-
-function mapErrorToCode(message = '') {
-  const m = String(message);
-  if (m.includes('Price exceeds cap')) return 'RESALE_CAP_EXCEEDED';
-  if (m.includes('Version mismatch') || m.includes('Invalid expiry')) return 'STALE_CREDENTIAL';
-  if (m.includes('Invalid owner signature')) return 'FORGED_CREDENTIAL';
-  if (m.includes('Already admitted')) return 'ALREADY_ADMITTED';
-  if (m.includes('Not a winner') || m.includes('Not ticket owner')) return 'NOT_WINNER';
-  if (m.includes('Already claimed')) return 'ALREADY_CLAIMED';
-  if (m.includes('Listing not active')) return 'LISTING_NOT_ACTIVE';
-  if (m.includes('Incorrect payment')) return 'INSUFFICIENT_PAYMENT';
-  if (m.includes('window') || m.includes('Entry closed') || m.includes('Not drawn')) return 'WRONG_PHASE';
-  if (m.includes('Receipt timeout') || m.includes('ECONNRESET') || m.includes('ETIMEDOUT') || m.includes('fetch failed')) {
-    return 'RPC_TIMEOUT';
-  }
-  return 'INTERNAL_ERROR';
 }
 
 async function readTicketState(contract, slot) {
@@ -382,8 +473,10 @@ async function readTicketState(contract, slot) {
   const vNum = Number(version);
   let listed = false;
   let resalePriceWei = '0';
+  let seller = ethers.ZeroAddress;
   if (vNum > 0) {
-    const [, price, active] = await contract.getListing(BigInt(slot), version);
+    const [listingSeller, price, active] = await contract.getListing(BigInt(slot), version);
+    seller = listingSeller;
     listed = Boolean(active);
     if (active) resalePriceWei = price.toString();
   }
@@ -395,151 +488,8 @@ async function readTicketState(contract, slot) {
     admitted: Boolean(admitted),
     listed,
     resalePriceWei,
+    seller,
   };
-}
-
-async function buildStatusSnapshot(rpc, rpcUrl, contractAddress, artifact) {
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
-  const c = new ethers.Contract(contractAddress, artifact.abi, provider);
-  const [
-    chainId,
-    editionId,
-    phase,
-    entrantsCount,
-    winnersCount,
-    issuedCount,
-    admittedCount,
-    drawn,
-    drawLocked,
-    capacity,
-    facePrice,
-    claimDeadline,
-    resaleCutoff,
-    gateClose,
-    balance,
-    code,
-    winners,
-  ] = await Promise.all([
-    rpc('eth_chainId').then((x) => Number(BigInt(x))),
-    c.editionId(),
-    c.phase(),
-    c.entrantsCount(),
-    c.winnersCount(),
-    c.issuedCount(),
-    c.admittedCount(),
-    c.drawn(),
-    c.drawLocked(),
-    c.capacity(),
-    c.facePrice(),
-    c.claimDeadline(),
-    c.resaleCutoff(),
-    c.gateClose(),
-    provider.getBalance(contractAddress),
-    provider.getCode(contractAddress),
-    c.getWinners(),
-  ]);
-
-  const wCount = Number(winnersCount);
-  const tickets = [];
-  for (let s = 1; s <= wCount; s++) {
-    tickets.push(await readTicketState(c, s));
-  }
-
-  const fixture = loadDemoFixture();
-  const roles = {};
-  if (fixture?.roles) {
-    for (const [roleId, info] of Object.entries(fixture.roles)) {
-      const [ethBal, withdrawable] = await Promise.all([
-        provider.getBalance(info.address),
-        c.proceeds(info.address),
-      ]);
-      roles[roleId] = {
-        role: roleId,
-        label: info.label,
-        address: info.address,
-        ethBalanceWei: ethBal.toString(),
-        withdrawableWei: withdrawable.toString(),
-      };
-    }
-  }
-
-  let volumeEvidence = undefined;
-  if (existsSync(volumeSummaryPath)) {
-    try {
-      const vs = JSON.parse(readFileSync(volumeSummaryPath, 'utf8'));
-      volumeEvidence = {
-        totalWrites: vs.totalWrites,
-        writesPerSecond: vs.writesPerSecond,
-        manifestSha256: vs.manifestSha256,
-      };
-    } catch {}
-  }
-
-  return {
-    ok: true,
-    chainId,
-    rpcUrl,
-    contract: contractAddress,
-    codeHash: ethers.keccak256(code),
-    editionId,
-    phase,
-    drawLocked,
-    drawn,
-    capacity: Number(capacity),
-    facePriceWei: facePrice.toString(),
-    maxResalePriceWei: facePrice.toString(),
-    entrantsCount: Number(entrantsCount),
-    winnersCount: wCount,
-    issuedCount: Number(issuedCount),
-    admittedCount: Number(admittedCount),
-    claimDeadline: Number(claimDeadline),
-    resaleCutoff: Number(resaleCutoff),
-    gateClose: Number(gateClose),
-    balanceWei: balance.toString(),
-    contractBalanceWei: balance.toString(),
-    winners: Array.from(winners),
-    tickets,
-    roles,
-    volumeEvidence,
-  };
-}
-
-async function executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, value = 0n, gasLimit = 500_000n, opId = null, meta = null, beforeBroadcast = null, slotHint = null }) {
-  try {
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, value, gasLimit, opId, meta, beforeBroadcast });
-    const confirmed = receipt.status === '0x1';
-    let ticket = null;
-    if (confirmed) {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
-      const resolvedSlot = slotHint || Number(await c.heldSlot(wallet.address));
-      if (resolvedSlot > 0) {
-        ticket = await readTicketState(c, resolvedSlot);
-      }
-    }
-    return {
-      ok: confirmed,
-      txStatus: confirmed ? 'confirmed' : 'rejected',
-      txHash,
-      blockNumber: Number(BigInt(receipt.blockNumber)),
-      errorCode: confirmed ? null : 'INTERNAL_ERROR',
-      error: confirmed ? null : 'Transaction reverted on-chain',
-      ticket,
-    };
-  } catch (err) {
-    const msg = err?.message || String(err);
-    const code = mapErrorToCode(msg);
-    const isRecovering = code === 'RPC_TIMEOUT';
-    return {
-      ok: false,
-      txStatus: isRecovering ? 'unknown_recovering' : 'rejected',
-      txHash: null,
-      blockNumber: null,
-      errorCode: code,
-      error: msg,
-      ticket: null,
-    };
-  }
 }
 
 async function main() {
@@ -552,11 +502,14 @@ async function main() {
   // Demo keys are generated locally on first init and never committed. They are only
   // funded on the isolated Anvil chain and are not production wallet credentials.
   if (cmd === 'init-demo') {
-    if (existsSync(demoStatePath)) throw new Error('Demo state already exists. Use reset-demo before creating a new fixture.');
+    if (existsSync(demoStatePath) || existsSync(demoFixturePath)) {
+      throw new Error('Demo state already exists. Use reset-demo before creating a new fixture.');
+    }
     const rpcHost = new URL(rpcUrl).hostname;
-    if (!['127.0.0.1', 'localhost', '::1'].includes(rpcHost) || Number(BigInt(await rpc('eth_chainId'))) !== 31337) {
+    if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(rpcHost) || Number(BigInt(await rpc('eth_chainId'))) !== 31337) {
       throw new Error('init-demo is restricted to a loopback Anvil node with chain ID 31337.');
     }
+    mkdirSync(join(root, 'artifacts'), { recursive: true });
     const roles = Object.fromEntries(['organiser', 'gate', 'attester', 'fanA', 'fanB'].map((role) => {
       const wallet = ethers.Wallet.createRandom();
       return [role, { address: wallet.address, privateKey: wallet.privateKey }];
@@ -582,15 +535,15 @@ async function main() {
     const state = { contract: receipt.contractAddress, editionId, codeHash, chainId: Number(BigInt(await rpc('eth_chainId'))), rpcUrl };
     writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { flag: 'wx', mode: 0o600 });
     writeFileSync(demoStatePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
-    console.log(JSON.stringify({ ok: true, ...state, txHash, capacity, facePriceWei }, null, 2));
+    console.log(JSON.stringify({ ok: true, ...(opts.json ? { txStatus: 'confirmed' } : {}), ...state, txHash, capacity, facePriceWei }, null, 2));
     return;
   }
 
   if (cmd === 'reset-demo') {
     // Explicit reset clears only locally persisted demo identity/state. It does not
     // rewind the chain; init-demo deploys a fresh contract after this command.
-    for (const p of [demoStatePath, demoFixturePath]) if (existsSync(p)) unlinkSync(p);
-    console.log(JSON.stringify({ ok: true, reset: true }, null, 2));
+    for (const p of [demoStatePath, demoFixturePath, activityLogPath]) if (existsSync(p)) unlinkSync(p);
+    console.log(JSON.stringify({ ok: true, ...(opts.json ? { txStatus: 'confirmed' } : {}), reset: true }, null, 2));
     return;
   }
 
@@ -622,28 +575,55 @@ async function main() {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             const status = value.status;
             const gateDecision = value.decision;
-            if (jsonMode && gateDecision === 'ADMIT') value.txStatus = 'confirmed';
-            else if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') value.txStatus = 'unknown_recovering';
-            else if (jsonMode && gateDecision === 'ALREADY_FINALIZED') value.txStatus = value.prior?.decision === 'ADMIT' ? 'confirmed' : value.prior?.decision === 'REJECT' ? 'rejected' : 'unknown_recovering';
-            else if (jsonMode && (status === '0x1')) value.txStatus = 'confirmed';
-            else if (jsonMode && (status === '0x0' || gateDecision === 'REJECT')) value.txStatus = 'rejected';
+            if (jsonMode && !value.txStatus) {
+              if (gateDecision === 'ADMIT') value.txStatus = 'confirmed';
+              else if (gateDecision === 'HOLD_FOR_STAFF') value.txStatus = 'unknown_recovering';
+              else if (gateDecision === 'ALREADY_FINALIZED') value.txStatus = value.prior?.decision === 'ADMIT' ? 'confirmed' : value.prior?.decision === 'REJECT' ? 'rejected' : 'unknown_recovering';
+              else if (status === '0x1') value.txStatus = 'confirmed';
+              else if (status === '0x0' || gateDecision === 'REJECT') value.txStatus = 'rejected';
+            }
             if (jsonMode && value.txHash) value.txHash = String(value.txHash);
-            if (jsonMode && value.txStatus) value.ok = value.txStatus === 'confirmed';
-            if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') {
-              value.errorCode = 'INTERNAL_ERROR';
-              value.error = 'Receipt confirmation did not include the expected admission event. Hold for staff review.';
-              value.reason = value.error;
+            if (jsonMode && value.txStatus) {
+              if (value.txStatus === 'confirmed') {
+                value.ok = true;
+                value.errorCode = value.errorCode ?? null;
+                value.error = value.error ?? null;
+              } else if (value.txStatus === 'rejected') {
+                const msg = value.reason || value.error || null;
+                value.ok = false;
+                value.errorCode = value.errorCode || classifyErrorCode(msg, cmd);
+                value.error = msg || 'The contract rejected this transaction.';
+                value.reason = value.error;
+              } else if (value.txStatus === 'unknown_recovering') {
+                value.ok = false;
+                value.errorCode = value.errorCode || 'RPC_TIMEOUT';
+              } else {
+                value.ok = false;
+              }
             }
-            if (jsonMode && value.txStatus === 'rejected') {
-              value.errorCode = classifyErrorCode(value.reason, cmd);
-              value.error = value.reason || 'The contract rejected this transaction.';
-              value.reason = value.error;
+            if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(cmd)) {
+              const rawScanIdOpt = typeof opts['scan-id'] === 'string' && opts['scan-id'].trim() ? normalizeScanId(opts['scan-id']) : null;
+              const failed =
+                value.txStatus === 'rejected' ||
+                value.txStatus === 'unknown_recovering' ||
+                value.status === '0x0' ||
+                value.decision === 'REJECT' ||
+                value.gateDecision === 'REJECT';
+              logActivity({
+                action: cmd,
+                role: opts.role || null,
+                subject: cmd === 'enter' ? activitySubject(opts) : null,
+                scanId: value.scanId || rawScanIdOpt || null,
+                success: !failed,
+                txHash: value.txHash || null,
+              });
             }
-            if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(cmd)) logActivity({ action: cmd, role: opts.role || null, subject: cmd === 'enter' ? activitySubject(opts) : null,
-              scanId: value.scanId || opts['scan-id'] || null, success: value.txStatus !== 'rejected' && value.status !== '0x0' && value.decision !== 'REJECT', txHash: value.txHash || null });
             return log(jsonMode ? JSON.stringify(value, null, 2) : args[0]);
           }
         } catch {}
+      }
+      if (jsonMode && cmd && cmd !== 'help') {
+        return console.error(...args);
       }
       return log(...args);
     };
@@ -708,10 +688,15 @@ async function main() {
   }
 
   if (cmd === 'status') {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const c = new ethers.Contract(opts.contract, artifact.abi, provider);
+    const contractAddress = resolveContract(opts);
+    const chainId = Number(BigInt(await rpc('eth_chainId')));
+    const provider = makeProvider(rpcUrl, chainId);
+    const code = await provider.getCode(contractAddress);
+    if (!code || code === '0x') {
+      throw new Error(`No FairTickets contract deployed at ${contractAddress} on ${rpcUrl}. Run reset-demo and init-demo if Anvil was restarted.`);
+    }
+    const c = new ethers.Contract(contractAddress, artifact.abi, provider);
     const [
-      chainId,
       editionId,
       phase,
       entrantsCount,
@@ -724,9 +709,7 @@ async function main() {
       resaleCutoff,
       gateClose,
       balance,
-      code,
     ] = await Promise.all([
-      rpc('eth_chainId').then((x) => Number(BigInt(x))),
       c.editionId(),
       c.phase(),
       c.entrantsCount(),
@@ -738,8 +721,7 @@ async function main() {
       c.claimDeadline(),
       c.resaleCutoff(),
       c.gateClose(),
-      provider.getBalance(opts.contract),
-      provider.getCode(opts.contract),
+      provider.getBalance(contractAddress),
     ]);
     const capacity = Number(await c.capacity());
     const winners = drawn ? await c.getWinners() : [];
@@ -771,7 +753,7 @@ async function main() {
         {
           ok: true,
           chainId,
-          contract: opts.contract,
+          contract: contractAddress,
           rpcUrl,
           codeHash: ethers.keccak256(code),
           editionId,
@@ -843,7 +825,7 @@ async function main() {
     if (!attestation) throw new Error('enter requires --attestation unless a demo --role is selected.');
     const data = iface.encodeFunctionData('enter', [subject, BigInt(expiry), attestation]);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 300_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, blockNumber: Number(BigInt(receipt.blockNumber)), reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
@@ -852,7 +834,7 @@ async function main() {
     const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('lockDraw', []);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 200_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, blockNumber: Number(BigInt(receipt.blockNumber)), reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -861,7 +843,7 @@ async function main() {
     const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('draw', []);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 12_000_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, blockNumber: Number(BigInt(receipt.blockNumber)), reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
@@ -870,7 +852,7 @@ async function main() {
     const contractAddress = resolveContract(opts);
     let valueWei = opts.value ? BigInt(opts.value) : null;
     if (valueWei === null) {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const provider = makeProvider(rpcUrl);
       const c = new ethers.Contract(contractAddress, artifact.abi, provider);
       valueWei = await c.facePrice();
     }
@@ -885,12 +867,12 @@ async function main() {
     });
     let ticket = null;
     if (opts.json && receipt.status === '0x1') {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const provider = makeProvider(rpcUrl);
       const c = new ethers.Contract(contractAddress, artifact.abi, provider);
       const slot = Number(await c.heldSlot(wallet.address));
       if (slot > 0) ticket = await readTicketState(c, slot);
     }
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, blockNumber: Number(BigInt(receipt.blockNumber)), reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
     return;
   }
 
@@ -901,11 +883,11 @@ async function main() {
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 250_000n });
     let ticket = null;
     if (opts.json && receipt.status === '0x1') {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const provider = makeProvider(rpcUrl);
       const c = new ethers.Contract(contractAddress, artifact.abi, provider);
       ticket = await readTicketState(c, Number(opts.slot));
     }
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, blockNumber: Number(BigInt(receipt.blockNumber)), reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
     return;
   }
 
@@ -923,11 +905,11 @@ async function main() {
     });
     let ticket = null;
     if (opts.json && receipt.status === '0x1') {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const provider = makeProvider(rpcUrl);
       const c = new ethers.Contract(contractAddress, artifact.abi, provider);
       ticket = await readTicketState(c, Number(opts.slot));
     }
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, blockNumber: Number(BigInt(receipt.blockNumber)), reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
     return;
   }
 
@@ -937,15 +919,21 @@ async function main() {
     const editionId = resolveEditionId(opts);
     const chainId = Number(BigInt(await rpc('eth_chainId')));
     const slotNum = Number(opts.slot);
-    let versionNum = opts.version ? Number(opts.version) : null;
-    if (!versionNum) {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+    if (!Number.isInteger(slotNum) || slotNum <= 0) {
+      throw new Error(`Invalid slot: ${opts.slot}`);
+    }
+    let versionNum = (typeof opts.version === 'string' && opts.version.trim() !== '') ? Number(opts.version) : null;
+    if (!Number.isInteger(versionNum) || versionNum <= 0) {
+      const provider = makeProvider(rpcUrl, chainId);
       const c = new ethers.Contract(contractAddress, artifact.abi, provider);
       const [, v] = await c.getTicket(BigInt(slotNum));
       versionNum = Number(v);
+      if (versionNum <= 0) {
+        throw new Error(`Ticket slot ${slotNum} has not been claimed yet.`);
+      }
     }
-    let expiryNum = opts.expiry ? Number(opts.expiry) : null;
-    if (!expiryNum) {
+    let expiryNum = (typeof opts.expiry === 'string' && opts.expiry.trim() !== '') ? Number(opts.expiry) : null;
+    if (!Number.isInteger(expiryNum) || expiryNum <= 0) {
       const block = await rpc('eth_getBlockByNumber', ['latest', false]);
       expiryNum = Number(BigInt(block.timestamp)) + 90;
     }
@@ -984,8 +972,23 @@ async function main() {
   if (cmd === 'redeem') {
     const gate = new ethers.Wallet(resolveRoleKey(opts, 'gate'));
     const contractAddress = resolveContract(opts);
-    const ownerSig = opts.sig || opts['owner-sig'];
-    const scanId = opts['scan-id'] || ethers.hexlify(ethers.randomBytes(32));
+    const ownerSigRaw = (typeof opts.sig === 'string' && opts.sig.trim())
+      ? opts.sig.trim()
+      : (typeof opts['owner-sig'] === 'string' && opts['owner-sig'].trim())
+        ? opts['owner-sig'].trim()
+        : '';
+    if (!ownerSigRaw || !/^0x(?:[0-9a-fA-F]{2})+$/.test(ownerSigRaw)) {
+      throw new Error('Invalid owner signature format');
+    }
+    const scanId = normalizeScanId(typeof opts['scan-id'] === 'string' ? opts['scan-id'] : null);
+    const data = iface.encodeFunctionData('redeem', [
+      BigInt(opts.slot),
+      BigInt(opts.version),
+      BigInt(opts.expiry),
+      ownerSigRaw,
+      scanId,
+    ]);
+
     const claim = claimGateScanAtomic(scanId, {
       status: 'CLAIMED',
       acted: false,
@@ -996,28 +999,24 @@ async function main() {
       claimedAt: new Date().toISOString(),
     });
     if (!claim.claimed) {
+      const dupMsg = `Scan ID ${scanId} already claimed or acted on.`;
       if (opts.json) {
         console.log(JSON.stringify({
           ok: false,
           txStatus: 'rejected',
           txHash: null,
           scanId,
+          decision: 'REJECT',
           gateDecision: 'REJECT',
           errorCode: 'ALREADY_ADMITTED',
-          error: `Scan ID ${scanId} already claimed or acted on.`,
+          error: dupMsg,
+          reason: dupMsg,
         }, null, 2));
         return;
       }
-      throw new Error(`Scan ID ${scanId} already claimed or acted on.`);
+      throw new Error(dupMsg);
     }
 
-    const data = iface.encodeFunctionData('redeem', [
-      BigInt(opts.slot),
-      BigInt(opts.version),
-      BigInt(opts.expiry),
-      ownerSig,
-      scanId,
-    ]);
     let txHash, receipt;
     try {
       ({ txHash, receipt } = await sendSignedTx({
@@ -1043,15 +1042,18 @@ async function main() {
     } catch (err) {
       if (opts.json) {
         const msg = err?.message || String(err);
-        const code = mapErrorToCode(msg);
+        const recoverable = isRpcRecoverableError(err);
+        const code = recoverable ? 'RPC_TIMEOUT' : classifyErrorCode(msg, 'redeem');
         console.log(JSON.stringify({
           ok: false,
-          txStatus: code === 'RPC_TIMEOUT' ? 'unknown_recovering' : 'rejected',
-          txHash: null,
+          txStatus: recoverable ? 'unknown_recovering' : 'rejected',
+          txHash: err?.txHash || null,
           scanId,
+          decision: null,
           gateDecision: null,
           errorCode: code,
           error: msg,
+          reason: msg,
           ticket: null,
         }, null, 2));
         return;
@@ -1059,58 +1061,133 @@ async function main() {
       throw err;
     }
 
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const provider = makeProvider(rpcUrl);
     const c = new ethers.Contract(contractAddress, artifact.abi, provider);
 
     if (receipt.status !== '0x1') {
-      const fin = tryFinalizeGateDecision(scanId, { decision: 'REJECT', status: 'REJECTED', txHash, slot: String(opts.slot), version: String(opts.version) });
+      const reason = receipt.revertReason || 'Gate redeem rejected on-chain.';
+      const errorCode = classifyErrorCode(reason, 'redeem');
+      const fin = tryFinalizeGateDecision(scanId, {
+        decision: 'REJECT',
+        status: 'REJECTED',
+        txHash,
+        slot: String(opts.slot),
+        version: String(opts.version),
+        reason,
+        errorCode,
+      });
       if (!fin.wonFinalization) {
-        console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'ALREADY_FINALIZED', gateDecision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        const finMsg = `Scan ID ${scanId} was already finalized.`;
+        console.log(JSON.stringify({
+          ok: false,
+          txStatus: 'rejected',
+          txHash,
+          scanId,
+          decision: 'ALREADY_FINALIZED',
+          gateDecision: 'ALREADY_FINALIZED',
+          prior: fin.existing,
+          errorCode: 'ALREADY_ADMITTED',
+          error: finMsg,
+          reason: finMsg,
+        }, null, 2));
         return;
       }
       if (opts.json) {
-        const ticket = await readTicketState(c, Number(opts.slot));
+        let ticket = null;
+        try { ticket = await readTicketState(c, Number(opts.slot)); } catch {}
         console.log(JSON.stringify({
           ok: false,
           txStatus: 'rejected',
           txHash,
           scanId,
           blockNumber: Number(BigInt(receipt.blockNumber)),
+          decision: 'REJECT',
           gateDecision: 'REJECT',
-          errorCode: ticket?.admitted ? 'ALREADY_ADMITTED' : 'STALE_CREDENTIAL',
-          error: 'Gate redeem rejected on-chain (stale version, already admitted, expired, or invalid signature).',
+          errorCode,
+          error: reason,
+          reason,
           ticket,
         }, null, 2));
         return;
       }
-    console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, reason: receipt.revertReason || null, scanId }, null, 2));
+      console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, reason: receipt.revertReason || null, scanId }, null, 2));
       return;
     }
 
     const admittedEvent = parseAdmittedEvent(iface, contractAddress, receipt, scanId, opts.slot, opts.version);
     if (!admittedEvent) {
-      const fin = tryFinalizeGateDecision(scanId, { decision: 'HOLD_FOR_STAFF', status: 'HOLD_FOR_STAFF', txHash, slot: String(opts.slot), version: String(opts.version) });
+      const holdMsg = 'Missing or mismatched Admitted log';
+      const fin = tryFinalizeGateDecision(scanId, {
+        decision: 'HOLD_FOR_STAFF',
+        status: 'HOLD_FOR_STAFF',
+        txHash,
+        slot: String(opts.slot),
+        version: String(opts.version),
+        reason: holdMsg,
+      });
       if (!fin.wonFinalization) {
-        console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'ALREADY_FINALIZED', gateDecision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        const finMsg = `Scan ID ${scanId} was already finalized.`;
+        console.log(JSON.stringify({
+          ok: false,
+          txStatus: 'rejected',
+          txHash,
+          scanId,
+          decision: 'ALREADY_FINALIZED',
+          gateDecision: 'ALREADY_FINALIZED',
+          prior: fin.existing,
+          errorCode: 'ALREADY_ADMITTED',
+          error: finMsg,
+          reason: finMsg,
+        }, null, 2));
         return;
       }
-      console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'HOLD_FOR_STAFF', gateDecision: 'REJECT', reason: 'Missing or mismatched Admitted log', txHash, scanId }, null, 2));
+      console.log(JSON.stringify({
+        ok: false,
+        txStatus: 'unknown_recovering',
+        decision: 'HOLD_FOR_STAFF',
+        gateDecision: 'HOLD_FOR_STAFF',
+        errorCode: 'INTERNAL_ERROR',
+        error: 'Receipt confirmation did not include the expected admission event. Hold for staff review.',
+        reason: holdMsg,
+        txHash,
+        scanId,
+      }, null, 2));
       return;
     }
 
-    const fin = tryFinalizeGateDecision(scanId, { decision: 'ADMIT', status: 'ADMITTED', txHash, slot: String(opts.slot), version: String(opts.version) });
+    const fin = tryFinalizeGateDecision(scanId, {
+      decision: 'ADMIT',
+      status: 'ADMITTED',
+      txHash,
+      slot: String(opts.slot),
+      version: String(opts.version),
+    });
     if (!fin.wonFinalization) {
-      console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'ALREADY_FINALIZED', gateDecision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+      const finMsg = `Scan ID ${scanId} was already finalized.`;
+      console.log(JSON.stringify({
+        ok: false,
+        txStatus: 'rejected',
+        txHash,
+        scanId,
+        decision: 'ALREADY_FINALIZED',
+        gateDecision: 'ALREADY_FINALIZED',
+        prior: fin.existing,
+        errorCode: 'ALREADY_ADMITTED',
+        error: finMsg,
+        reason: finMsg,
+      }, null, 2));
       return;
     }
     if (opts.json) {
-      const ticket = await readTicketState(c, Number(opts.slot));
+      let ticket = null;
+      try { ticket = await readTicketState(c, Number(opts.slot)); } catch {}
       console.log(JSON.stringify({
         ok: true,
         txStatus: 'confirmed',
         txHash,
         scanId,
         blockNumber: Number(BigInt(receipt.blockNumber)),
+        decision: 'ADMIT',
         gateDecision: 'ADMIT',
         errorCode: null,
         error: null,
@@ -1127,8 +1204,15 @@ async function main() {
     if (!address) {
       throw new Error('resume requires --address or --key');
     }
-    const targetOpId = opts['op-id'] || opts['scan-id'] || null;
-    const targetTxHash = opts['tx-hash'] ? String(opts['tx-hash']).toLowerCase() : null;
+    const targetScanId = (typeof opts['scan-id'] === 'string' && opts['scan-id'].trim())
+      ? normalizeScanId(opts['scan-id'])
+      : null;
+    const targetOpId = (typeof opts['op-id'] === 'string' && opts['op-id'].trim())
+      ? opts['op-id'].trim()
+      : targetScanId;
+    const targetTxHash = (typeof opts['tx-hash'] === 'string' && opts['tx-hash'].trim())
+      ? opts['tx-hash'].trim().toLowerCase()
+      : null;
     const entries = await withWalletLock(address, () => readJournal(address));
     const needsWork = entries.filter((e) => {
       if (targetOpId && e.opId !== targetOpId) return false;
@@ -1149,10 +1233,31 @@ async function main() {
         } catch (err) {
           const msg = (err.message || '').toLowerCase();
           if (!msg.includes('already known') && !msg.includes('nonce too low')) {
+            if (err && typeof err === 'object') err.txHash = entry.txHash;
             throw err;
           }
         }
-        receipt = await waitForReceipt(rpc, entry.txHash);
+        try {
+          receipt = await waitForReceipt(rpc, entry.txHash);
+        } catch (err) {
+          if (err && typeof err === 'object') err.txHash = entry.txHash;
+          throw err;
+        }
+      }
+
+      let revertReason = entry.revertReason || null;
+      if (receipt.status !== '0x1' && !revertReason) {
+        try {
+          const parsedTx = ethers.Transaction.from(entry.signedBytes);
+          await rpc('eth_call', [{
+            from: address,
+            to: entry.to || receipt.contractAddress || undefined,
+            data: parsedTx.data,
+            value: ethers.toQuantity(parsedTx.value || 0n),
+          }, receipt.blockNumber || 'latest']);
+        } catch (err) {
+          revertReason = extractRevertReason(err);
+        }
       }
 
       const finalStatus = receipt.status === '0x1' ? 'CONFIRMED' : 'REVERTED';
@@ -1161,30 +1266,61 @@ async function main() {
           status: finalStatus,
           blockNumber: Number(BigInt(receipt.blockNumber)),
           gasUsed: Number(BigInt(receipt.gasUsed)),
+          revertReason,
           resumedAt: new Date().toISOString(),
         });
       }
 
       let gateDecision = null;
       let wonFinalization = null;
+      let errorCode = null;
       if (entry.meta?.kind === 'gate-redeem') {
         const { scanId, contract: contractAddr, slot, version } = entry.meta;
         if (receipt.status !== '0x1') {
-          const fin = tryFinalizeGateDecision(scanId, { decision: 'REJECT', status: 'REJECTED', txHash: entry.txHash, slot, version, resumed: true });
+          const reasonText = revertReason || 'Gate redeem rejected on-chain.';
+          errorCode = classifyErrorCode(reasonText, 'redeem');
+          const fin = tryFinalizeGateDecision(scanId, {
+            decision: 'REJECT',
+            status: 'REJECTED',
+            txHash: entry.txHash,
+            slot,
+            version,
+            reason: reasonText,
+            errorCode,
+            resumed: true,
+          });
           wonFinalization = fin.wonFinalization;
           gateDecision = fin.wonFinalization ? 'REJECT' : 'ALREADY_FINALIZED';
         } else {
           const admittedEvent = parseAdmittedEvent(iface, contractAddr, receipt, scanId, slot, version);
           if (admittedEvent) {
-            const fin = tryFinalizeGateDecision(scanId, { decision: 'ADMIT', status: 'ADMITTED', txHash: entry.txHash, slot, version, resumed: true });
+            const fin = tryFinalizeGateDecision(scanId, {
+              decision: 'ADMIT',
+              status: 'ADMITTED',
+              txHash: entry.txHash,
+              slot,
+              version,
+              resumed: true,
+            });
             wonFinalization = fin.wonFinalization;
             gateDecision = fin.wonFinalization ? 'ADMIT' : 'ALREADY_FINALIZED';
           } else {
-            const fin = tryFinalizeGateDecision(scanId, { decision: 'HOLD_FOR_STAFF', status: 'HOLD_FOR_STAFF', txHash: entry.txHash, slot, version, resumed: true });
+            const fin = tryFinalizeGateDecision(scanId, {
+              decision: 'HOLD_FOR_STAFF',
+              status: 'HOLD_FOR_STAFF',
+              txHash: entry.txHash,
+              slot,
+              version,
+              reason: 'Missing or mismatched Admitted log',
+              resumed: true,
+            });
             wonFinalization = fin.wonFinalization;
             gateDecision = fin.wonFinalization ? 'HOLD_FOR_STAFF' : 'ALREADY_FINALIZED';
+            errorCode = 'INTERNAL_ERROR';
           }
         }
+      } else if (finalStatus === 'REVERTED') {
+        errorCode = classifyErrorCode(revertReason, 'resume');
       }
 
       resumed.push({
@@ -1193,14 +1329,16 @@ async function main() {
         status: finalStatus,
         gateDecision,
         wonFinalization,
+        ...(revertReason ? { reason: revertReason } : {}),
+        ...(errorCode ? { errorCode } : {}),
       });
     }
 
     // Handle interrupted pre-journal gate claim (claimed <scanId>.json, crashed before journal write).
     // Re-read the journal inside withWalletLock so a worker that wrote & exited after our initial
     // snapshot cannot be misclassified as ABORTED_BEFORE_SEND.
-    if (opts['scan-id']) {
-      const scanId = opts['scan-id'];
+    if (targetScanId) {
+      const scanId = targetScanId;
       const claimPath = getGateClaimPath(scanId);
       await withWalletLock(address, () => {
         const freshEntries = readJournal(address);
@@ -1216,9 +1354,11 @@ async function main() {
               wonFinalization: false,
             });
           } else {
+            const abortReason = 'Gate worker aborted before broadcasting transaction.';
             const fin = tryFinalizeGateDecision(scanId, {
               decision: 'ABORTED_BEFORE_SEND',
               status: 'ABORTED_BEFORE_SEND',
+              reason: abortReason,
               resumed: true,
             });
             resumed.push({
@@ -1227,29 +1367,105 @@ async function main() {
               status: 'NO_TX',
               gateDecision: fin.wonFinalization ? 'ABORTED_BEFORE_SEND' : 'ALREADY_FINALIZED',
               wonFinalization: fin.wonFinalization,
+              reason: abortReason,
             });
           }
         }
       });
     }
 
-    const txStatus = resumed.some((x) => x.status === 'ACTIVE_WORKER') ? 'pending'
-      : resumed.some((x) => x.status === 'REVERTED' || x.gateDecision === 'ABORTED_BEFORE_SEND') ? 'rejected' : 'confirmed';
-    console.log(JSON.stringify({ ok: true, txStatus, txHash: resumed.find((x) => x.txHash)?.txHash || null, address, resumedCount: resumed.length, resumed }, null, 2));
+    let txStatus = 'confirmed';
+    let topTxHash = resumed.find((x) => x.txHash)?.txHash || null;
+    let topGateDecision = resumed.find((x) => x.gateDecision)?.gateDecision || null;
+    let topErrorCode = null;
+    let topError = null;
+    let extra = {};
+
+    if (resumed.length > 0) {
+      if (resumed.some((x) => x.status === 'ACTIVE_WORKER')) {
+        txStatus = 'pending';
+        topError = 'Transaction submission is still in progress.';
+      } else if (resumed.some((x) => x.gateDecision === 'HOLD_FOR_STAFF')) {
+        txStatus = 'unknown_recovering';
+        topErrorCode = 'INTERNAL_ERROR';
+        topError = 'Receipt confirmation did not include the expected admission event. Hold for staff review.';
+      } else if (resumed.some((x) => x.status === 'REVERTED' || x.gateDecision === 'REJECT' || x.gateDecision === 'ABORTED_BEFORE_SEND')) {
+        txStatus = 'rejected';
+        const bad = resumed.find((x) => x.status === 'REVERTED' || x.gateDecision === 'REJECT' || x.gateDecision === 'ABORTED_BEFORE_SEND');
+        topError = bad?.reason || 'Recovered transaction reverted on-chain.';
+        topErrorCode = bad?.errorCode || classifyErrorCode(topError, topGateDecision ? 'redeem' : 'resume');
+      }
+    } else if (targetScanId && existsSync(getGateFinalPath(targetScanId))) {
+      const prior = JSON.parse(readFileSync(getGateFinalPath(targetScanId), 'utf8'));
+      topTxHash = prior.txHash || null;
+      topGateDecision = prior.decision || null;
+      extra = { alreadyFinalized: true, prior };
+      if (prior.decision === 'ADMIT') {
+        txStatus = 'confirmed';
+      } else if (prior.decision === 'HOLD_FOR_STAFF') {
+        txStatus = 'unknown_recovering';
+        topErrorCode = 'INTERNAL_ERROR';
+        topError = prior.reason || 'Receipt confirmation did not include the expected admission event. Hold for staff review.';
+      } else {
+        txStatus = 'rejected';
+        topError = prior.reason || `Scan was previously finalized as ${prior.decision}.`;
+        topErrorCode = prior.errorCode || classifyErrorCode(topError, 'redeem');
+      }
+    } else if (targetOpId || targetTxHash) {
+      const matched = entries.find((e) =>
+        (targetTxHash && String(e.txHash).toLowerCase() === targetTxHash) ||
+        (targetOpId && e.opId === targetOpId)
+      );
+      if (matched) {
+        topTxHash = matched.txHash || null;
+        if (matched.status === 'PENDING') {
+          txStatus = 'pending';
+        } else if (matched.status === 'REVERTED') {
+          txStatus = 'rejected';
+          topError = matched.revertReason || 'Previously journaled transaction reverted on-chain.';
+          topErrorCode = classifyErrorCode(topError, matched.meta?.kind === 'gate-redeem' ? 'redeem' : 'resume');
+        } else {
+          txStatus = 'confirmed';
+        }
+      }
+    }
+
+    const ok = txStatus === 'confirmed';
+    console.log(JSON.stringify({
+      ok,
+      txStatus,
+      txHash: topTxHash,
+      ...(targetScanId ? { scanId: targetScanId } : {}),
+      ...(topGateDecision ? { gateDecision: topGateDecision } : {}),
+      errorCode: ok ? null : topErrorCode,
+      error: ok ? null : topError,
+      ...(topError && !ok ? { reason: topError } : {}),
+      address,
+      resumedCount: resumed.length,
+      resumed,
+      ...extra,
+    }, null, 2));
     return;
   }
 
   if (cmd === 'withdraw') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts));
+    const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('withdraw', []);
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 200_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 200_000n });
+    console.log(JSON.stringify({
+      txHash,
+      status: receipt.status,
+      blockNumber: Number(BigInt(receipt.blockNumber)),
+      reason: receipt.revertReason || null,
+    }, null, 2));
     return;
   }
 
   if (cmd === 'ticket') {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const c = new ethers.Contract(opts.contract, artifact.abi, provider);
+    const contractAddress = resolveContract(opts);
+    const provider = makeProvider(rpcUrl);
+    const c = new ethers.Contract(contractAddress, artifact.abi, provider);
     const [owner, version, paidPrice, admitted] = await c.getTicket(BigInt(opts.slot));
     console.log(JSON.stringify({ slot: opts.slot, owner, version: Number(version), paidPrice: paidPrice.toString(), admitted }, null, 2));
     return;
@@ -1259,7 +1475,11 @@ async function main() {
     await rpc('evm_increaseTime', [Number(opts.seconds || 61)]);
     await rpc('evm_mine');
     const block = await rpc('eth_getBlockByNumber', ['latest', false]);
-    console.log(JSON.stringify({ blockNumber: Number(BigInt(block.number)), timestamp: Number(BigInt(block.timestamp)) }, null, 2));
+    console.log(JSON.stringify({
+      ...(opts.json ? { ok: true, txStatus: 'confirmed' } : {}),
+      blockNumber: Number(BigInt(block.number)),
+      timestamp: Number(BigInt(block.timestamp)),
+    }, null, 2));
     return;
   }
 
@@ -1269,7 +1489,11 @@ async function main() {
       await rpc('evm_mine');
     }
     const block = await rpc('eth_getBlockByNumber', ['latest', false]);
-    console.log(JSON.stringify({ blockNumber: Number(BigInt(block.number)), timestamp: Number(BigInt(block.timestamp)) }, null, 2));
+    console.log(JSON.stringify({
+      ...(opts.json ? { ok: true, txStatus: 'confirmed' } : {}),
+      blockNumber: Number(BigInt(block.number)),
+      timestamp: Number(BigInt(block.timestamp)),
+    }, null, 2));
     return;
   }
 
@@ -1302,13 +1526,31 @@ module.exports = { withWalletLock, getWalletLockEndpoint };
 if (require.main === module) {
   main().catch((err) => {
     const parsed = parseArgs(process.argv.slice(2));
-    try { if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(parsed.cmd)) logActivity({ action: parsed.cmd, role: parsed.opts.role || null, subject: parsed.cmd === 'enter' ? activitySubject(parsed.opts) : null,
-      scanId: parsed.opts['scan-id'] || null, success: false, error: err.message || String(err) }); } catch {}
+    try {
+      if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(parsed.cmd)) {
+        const rawScanIdOpt = typeof parsed.opts['scan-id'] === 'string' && parsed.opts['scan-id'].trim() ? normalizeScanId(parsed.opts['scan-id']) : null;
+        logActivity({
+          action: parsed.cmd,
+          role: parsed.opts.role || null,
+          subject: parsed.cmd === 'enter' ? activitySubject(parsed.opts) : null,
+          scanId: rawScanIdOpt,
+          success: false,
+          txHash: err?.txHash || null,
+          error: err.message || String(err),
+        });
+      }
+    } catch {}
     if (parsed.opts.json) {
-      const message = err.message || String(err);
-      const unavailable = /timeout|timed out|network|rpc|socket|fetch failed|connection reset|econn|missing rpc response/i.test(message);
-      console.log(JSON.stringify({ ok: false, txStatus: unavailable ? 'unknown_recovering' : 'rejected', txHash: null,
-        errorCode: unavailable ? 'RPC_TIMEOUT' : classifyErrorCode(message, parsed.cmd), error: message, reason: message }, null, 2));
+      const message = err?.message || String(err);
+      const recoverable = isRpcRecoverableError(err);
+      console.log(JSON.stringify({
+        ok: false,
+        txStatus: recoverable ? 'unknown_recovering' : 'rejected',
+        txHash: err?.txHash || null,
+        errorCode: recoverable ? 'RPC_TIMEOUT' : classifyErrorCode(message, parsed.cmd),
+        error: message,
+        reason: message,
+      }, null, 2));
     } else console.error(err.message || err);
     process.exit(1);
   });
