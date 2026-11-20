@@ -17,7 +17,7 @@ function cli(args) {
 
 async function main() {
   const demoStartMs = performance.now();
-  const port = 8545;
+  const port = Number(process.env.FAIRTICKETS_DEMO_PORT || 18545);
   const anvil = await startAnvil({ port, blockTime: 1 });
   const rpc = anvil.endpoint;
 

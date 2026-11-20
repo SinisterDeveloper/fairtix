@@ -1,8 +1,9 @@
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { execFile, execFileSync } = require('node:child_process');
-const { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs');
-const { join, resolve } = require('node:path');
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { basename, dirname, join, resolve } = require('node:path');
 const { promisify } = require('node:util');
 const { ethers } = require('./toolchain.cjs');
 const { startAnvil } = require('./anvil.cjs');
@@ -11,10 +12,13 @@ const execFileAsync = promisify(execFile);
 
 const root = resolve(__dirname, '..');
 const cliPath = join(__dirname, 'cli.cjs');
-const demoStatePath = join(root, 'artifacts', 'demo-state.json');
-const demoFixturePath = join(root, 'artifacts', 'demo-fixture.json');
-const activityLogPath = join(root, 'artifacts', 'activity-log.ndjson');
-const gateClaimsDir = join(root, 'artifacts', 'gate-claims');
+const tempRoot = resolve(tmpdir());
+const stateDir = resolve(mkdtempSync(join(tempRoot, 'fairtickets-loop2-')));
+const cliEnv = { ...process.env, FAIRTICKETS_STATE_DIR: stateDir };
+const demoStatePath = join(stateDir, 'demo-state.json');
+const demoFixturePath = join(stateDir, 'demo-fixture.json');
+const activityLogPath = join(stateDir, 'activity-log.ndjson');
+const gateClaimsDir = join(stateDir, 'gate-claims');
 
 let checksPassed = 0;
 
@@ -26,6 +30,7 @@ function check(cond, msg) {
 function runCli(args) {
   const out = execFileSync(process.execPath, [cliPath, ...args], {
     cwd: root,
+    env: cliEnv,
     encoding: 'utf8',
   });
   return JSON.parse(out);
@@ -35,6 +40,7 @@ function runCliAllowFail(args) {
   try {
     const out = execFileSync(process.execPath, [cliPath, ...args], {
       cwd: root,
+      env: cliEnv,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -56,6 +62,7 @@ async function runCliAsyncAllowFail(args) {
   try {
     const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
       cwd: root,
+      env: cliEnv,
       encoding: 'utf8',
     });
     return { exitCode: 0, data: JSON.parse(stdout) };
@@ -164,21 +171,18 @@ async function main() {
     const lockRes = runCli(['lock-draw', '--role', 'organiser', '--json']);
     check(lockRes.ok === true && lockRes.txStatus === 'confirmed', 'lock-draw after entry deadline must confirm');
 
-    const earlyDraw = runCliAllowFail(['draw', '--role', 'organiser', '--json']);
-    check(earlyDraw.data?.txStatus === 'rejected' && earlyDraw.data?.errorCode === 'WRONG_PHASE', 'draw before target block must reject as WRONG_PHASE');
-    check(String(earlyDraw.data?.error || '').includes('Target block not reached'), 'early draw must surface Target block not reached');
-
-    const mined = runCli(['mine', '--blocks', '2', '--json']);
-    check(mined.ok === true && mined.txStatus === 'confirmed', 'mine --blocks 2 must confirm');
+    const lockedStatus = runCli(['status', '--json']);
+    check(lockedStatus.allocation?.lotteryTargetBlock === 0, 'sequential entries must not trigger a lottery');
 
     const drawRes = runCli(['draw', '--role', 'organiser', '--json']);
-    check(drawRes.ok === true && drawRes.txStatus === 'confirmed', 'draw after target block must confirm');
+    check(drawRes.ok === true && drawRes.txStatus === 'confirmed', 'queue allocation must confirm without mining additional blocks');
 
     const afterDraw = runCli(['status', '--json']);
     check(afterDraw.drawn === true && afterDraw.phase === 'CLAIM' && afterDraw.winnersCount === 1, 'status must reflect CLAIM phase and 1 winner');
 
     const winnerAddr = afterDraw.winners[0].toLowerCase();
     const fanAAddr = afterDraw.roles.fanA.address.toLowerCase();
+    check(winnerAddr === fanAAddr, 'earlier entry must receive the reservation');
     const winnerRole = winnerAddr === fanAAddr ? 'fanA' : 'fanB';
     const loserRole = winnerRole === 'fanA' ? 'fanB' : 'fanA';
 
@@ -579,8 +583,9 @@ async function main() {
     }, null, 2));
   } finally {
     await anvil.stop();
-    if (existsSync(demoStatePath)) unlinkSync(demoStatePath);
-    if (existsSync(demoFixturePath)) unlinkSync(demoFixturePath);
+    if (dirname(stateDir) === tempRoot && basename(stateDir).startsWith('fairtickets-loop2-')) {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   }
 }
 

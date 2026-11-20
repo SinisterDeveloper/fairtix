@@ -821,6 +821,14 @@ async function main() {
       provider.getBalance(contractAddress),
     ]);
     const capacity = Number(await c.capacity());
+    const allocation = await Promise.all([c.lotteryStart(), c.lotteryEnd(), c.drawTargetBlock()])
+      .then(([start, end, target]) => ({
+        policy: 'queue_by_entry_block',
+        lotteryStart: Number(start),
+        lotteryEndExclusive: Number(end),
+        lotteryTargetBlock: Number(target),
+      }))
+      .catch(() => undefined);
     const winners = drawn ? await c.getWinners() : [];
     const tickets = await Promise.all(Array.from({ length: capacity }, async (_, i) => {
       const slot = i + 1;
@@ -869,6 +877,7 @@ async function main() {
           balanceWei: balance.toString(),
           contractBalanceWei: balance.toString(),
           capacity,
+          ...(allocation ? { allocation } : {}),
           facePriceWei: (await c.facePrice()).toString(),
           maxResalePriceWei: (await c.facePrice()).toString(),
           displayCurrency: 'INR',

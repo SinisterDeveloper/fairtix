@@ -5,7 +5,7 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /// @title FairTickets
-/// @notice Event-scoped fair ticketing contract with attested entry, bounded Fisher-Yates draw,
+/// @notice Event-scoped fair ticketing contract with attested entry, queue priority and a boundary batch lottery,
 ///         primary claim, price-capped resale, pull payouts, and EIP-712 one-time gate admission.
 contract FairTickets is EIP712 {
     using ECDSA for bytes32;
@@ -45,6 +45,8 @@ contract FairTickets is EIP712 {
     uint256 public drawTargetBlock;
     bytes32 public drawTargetHash;
     uint256 public winnersCount;
+    uint256 public lotteryStart;
+    uint256 public lotteryEnd;
 
     uint64 public claimDeadline;
     uint64 public resaleCutoff;
@@ -57,6 +59,8 @@ contract FairTickets is EIP712 {
     mapping(bytes32 => bool) public subjectEntered;
     mapping(address => bool) public walletEntered;
     mapping(address => bytes32) public walletSubject;
+    uint256[] private _batchStarts;
+    uint256 private _lastEntryBlock;
 
     mapping(uint256 => uint256) private _fy;
     mapping(uint256 => address) public reservedWinner;
@@ -141,6 +145,10 @@ contract FairTickets is EIP712 {
         walletSubject[msg.sender] = subject;
 
         uint256 index = entrants.length;
+        if (index == 0 || _lastEntryBlock != block.number) {
+            _batchStarts.push(index);
+            _lastEntryBlock = block.number;
+        }
         entrants.push(msg.sender);
         emit Entered(msg.sender, subject, index);
     }
@@ -151,18 +159,36 @@ contract FairTickets is EIP712 {
         require(!drawn, "Already drawn");
 
         drawLocked = true;
-        drawTargetBlock = block.number + 2;
+        uint256 n = entrants.length;
+        if (n > capacity) {
+            // Find the batch containing the last available slot's queue index.
+            uint256 lo = 0;
+            uint256 hi = _batchStarts.length;
+            while (lo + 1 < hi) {
+                uint256 mid = lo + (hi - lo) / 2;
+                if (_batchStarts[mid] < capacity) lo = mid;
+                else hi = mid;
+            }
+            uint256 end = hi < _batchStarts.length ? _batchStarts[hi] : n;
+            if (end > capacity) {
+                lotteryStart = _batchStarts[lo];
+                lotteryEnd = end;
+                drawTargetBlock = block.number + 2;
+            }
+        }
         emit DrawLocked(drawTargetBlock, entrants.length);
     }
 
     function draw() external {
         require(drawLocked, "Draw not locked");
         require(!drawn, "Already drawn");
-        require(block.number > drawTargetBlock, "Target block not reached");
-        require(block.number <= drawTargetBlock + 256, "Draw window missed");
-
-        bytes32 targetHash = blockhash(drawTargetBlock);
-        require(targetHash != bytes32(0), "Zero target hash");
+        bytes32 targetHash;
+        if (drawTargetBlock != 0) {
+            require(block.number > drawTargetBlock, "Target block not reached");
+            require(block.number <= drawTargetBlock + 256, "Draw window missed");
+            targetHash = blockhash(drawTargetBlock);
+            require(targetHash != bytes32(0), "Zero target hash");
+        }
 
         drawn = true;
         drawTargetHash = targetHash;
@@ -178,16 +204,20 @@ contract FairTickets is EIP712 {
         uint256 count = n < capacity ? n : capacity;
         winnersCount = count;
 
+        uint256 start = lotteryStart;
+        uint256 end = lotteryEnd;
         bytes32 seed = keccak256(abi.encodePacked(targetHash, address(this), n));
         for (uint256 i = 0; i < count; ) {
-            uint256 r = uint256(keccak256(abi.encodePacked(seed, i)));
-            uint256 j = i + (r % (n - i));
+            uint256 selected = i;
+            if (end != 0 && i >= start) {
+                uint256 r = uint256(keccak256(abi.encodePacked(seed, i)));
+                uint256 j = i + (r % (end - i));
+                uint256 idxI = _fy[i] == 0 ? i : _fy[i] - 1;
+                selected = _fy[j] == 0 ? j : _fy[j] - 1;
+                _fy[j] = idxI + 1;
+            }
 
-            uint256 idxI = _fy[i] == 0 ? i : _fy[i] - 1;
-            uint256 idxJ = _fy[j] == 0 ? j : _fy[j] - 1;
-            _fy[j] = idxI + 1;
-
-            address winner = entrants[idxJ];
+            address winner = entrants[selected];
             uint256 slot = i + 1;
             reservedWinner[slot] = winner;
             winnerSlot[winner] = slot;

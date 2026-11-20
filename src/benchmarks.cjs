@@ -168,24 +168,20 @@ async function deployFairTickets(rpc, rpcBatch, deployer, nonce, {
   return { address: receipt.contractAddress, editionId, entryDeadline: now + entryWindow, runtimeCodeHash };
 }
 
-function computeExpectedWinners(entrants, targetHash, contractAddress, capacity) {
+function computeExpectedWinners(entrants, targetHash, contractAddress, capacity, start, end) {
   const n = entrants.length;
   const count = Math.min(n, capacity);
   const seed = ethers.solidityPackedKeccak256(
     ['bytes32', 'address', 'uint256'],
     [targetHash, contractAddress, BigInt(n)]
   );
-  const fy = new Map();
-  const winners = [];
-  for (let i = 0; i < count; i++) {
+  const shuffled = entrants.slice();
+  for (let i = start; i < count; i++) {
     const r = BigInt(ethers.solidityPackedKeccak256(['bytes32', 'uint256'], [seed, BigInt(i)]));
-    const j = i + Number(r % BigInt(n - i));
-    const idxI = fy.has(i) ? fy.get(i) : i;
-    const idxJ = fy.has(j) ? fy.get(j) : j;
-    fy.set(j, idxI);
-    winners.push(entrants[idxJ]);
+    const j = i + Number(r % BigInt(end - i));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
-  return winners;
+  return shuffled.slice(0, count);
 }
 
 async function advanceTime(rpc, seconds) {
@@ -289,7 +285,7 @@ async function benchmark1(port) {
           try {
             const parsed = iface.parseLog(l);
             if (parsed && parsed.name === 'Entered') {
-              enteredLogs.push({ index: Number(parsed.args.index), wallet: parsed.args.wallet });
+              enteredLogs.push({ index: Number(parsed.args.index), wallet: parsed.args.wallet, block: r.blockNumber });
             }
           } catch {}
         }
@@ -299,11 +295,18 @@ async function benchmark1(port) {
     const frozenEntrants = enteredLogs.map((e) => e.wallet);
     assert(frozenEntrants.length === 1000, 'Must have 1000 Entered events');
 
+    const boundaryBlock = enteredLogs[99].block;
+    const start = enteredLogs.findIndex((e) => e.block === boundaryBlock);
+    const end = enteredLogs.findLastIndex((e) => e.block === boundaryBlock) + 1;
+    assert(start > 0 && start < 100 && end > 100 && end < 1000, 'Fixture must exercise all three queue regions');
+    assert(Number(await contract.lotteryStart()) === start && Number(await contract.lotteryEnd()) === end, 'Lottery must cover only the boundary batch');
     const expectedWinners = computeExpectedWinners(
       frozenEntrants,
       targetHash,
       contractAddr,
-      100
+      100,
+      start,
+      end
     );
     for (let i = 0; i < 100; i++) {
       assert(onChainWinners[i].toLowerCase() === expectedWinners[i].toLowerCase(), `Winner mismatch at index ${i}`);
@@ -324,6 +327,9 @@ async function benchmark1(port) {
         uniqueWinners: uniqueWinners.size,
         drawGasUsed: Number(BigInt(drawReceipt.gasUsed)),
         independentDrawVerified: true,
+        queuePriorityReservations: start,
+        lotteryApplicants: end - start,
+        lotteryReservations: 100 - start,
       },
     };
   } finally {
@@ -419,13 +425,16 @@ async function benchmark3(port) {
         return signTx(w, 0, contractAddr, iface.encodeFunctionData('enter', [subject, expiry, sig]), 0n, 250_000n);
       })
     );
-    await sendAndMineWaves(rpc, rpcBatch, enterTxs, 100);
+    const entries = await sendAndMineWaves(rpc, rpcBatch, enterTxs, 100);
+    assert(entries.every((r) => r.status === '0x1'), 'All entries must succeed');
     await advanceTime(rpc, 3700);
-    await sendOne(rpc, rpcBatch, deployer, 1, contractAddr, iface.encodeFunctionData('lockDraw', []));
-    await rpc('evm_mine');
-    await rpc('evm_mine');
-    await rpc('evm_mine');
-    await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 12_000_000n);
+    const lock = await sendOne(rpc, rpcBatch, deployer, 1, contractAddr, iface.encodeFunctionData('lockDraw', []));
+    assert(lock.status === '0x1', 'Allocation lock must succeed');
+    assert(await contract.drawTargetBlock() === 0n, 'An exact-fit batch must not trigger a lottery');
+    const allocation = await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 12_000_000n);
+    assert(allocation.status === '0x1', 'Queue allocation must finalize without waiting for a random block');
+    const firstBatch = new Set(entrants.slice(0, 100).map((w) => w.address.toLowerCase()));
+    assert((await contract.getWinners()).every((w) => firstBatch.has(w.toLowerCase())), 'All slots must go to the exact-fit first batch');
 
     // Single 1,000-request concurrent burst of claim() transactions
     const claimData = iface.encodeFunctionData('claim', []);
