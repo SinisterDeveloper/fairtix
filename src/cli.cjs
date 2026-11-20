@@ -6,16 +6,17 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
 const root = resolve(__dirname, '..');
+const stateDir = resolve(process.env.FAIRTICKETS_STATE_DIR || join(root, 'artifacts'));
 const artifactPath = join(root, 'artifacts', 'FairTickets.json');
-const demoFixturePath = join(root, 'artifacts', 'demo-fixture.json');
-const demoStatePath = join(root, 'artifacts', 'demo-state.json');
+const demoFixturePath = join(stateDir, 'demo-fixture.json');
+const demoStatePath = join(stateDir, 'demo-state.json');
 const volumeSummaryPath = join(root, 'artifacts', 'volume-summary.json');
-const journalDir = join(root, 'artifacts', 'journal');
-const gateClaimsDir = join(root, 'artifacts', 'gate-claims');
-const activityLogPath = join(root, 'artifacts', 'activity-log.ndjson');
+const journalDir = join(stateDir, 'journal');
+const gateClaimsDir = join(stateDir, 'gate-claims');
+const activityLogPath = join(stateDir, 'activity-log.ndjson');
 
 function logActivity(event) {
-  mkdirSync(join(root, 'artifacts'), { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
   appendFileSync(activityLogPath, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + '\n', { mode: 0o600 });
 }
 
@@ -509,7 +510,7 @@ async function main() {
     if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(rpcHost) || Number(BigInt(await rpc('eth_chainId'))) !== 31337) {
       throw new Error('init-demo is restricted to a loopback Anvil node with chain ID 31337.');
     }
-    mkdirSync(join(root, 'artifacts'), { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
     const roles = Object.fromEntries(['organiser', 'gate', 'attester', 'fanA', 'fanB'].map((role) => {
       const wallet = ethers.Wallet.createRandom();
       return [role, { address: wallet.address, privateKey: wallet.privateKey }];
@@ -575,6 +576,7 @@ async function main() {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             const status = value.status;
             const gateDecision = value.decision;
+            if (jsonMode && gateDecision && !value.gateDecision) value.gateDecision = gateDecision;
             if (jsonMode && !value.txStatus) {
               if (gateDecision === 'ADMIT') value.txStatus = 'confirmed';
               else if (gateDecision === 'HOLD_FOR_STAFF') value.txStatus = 'unknown_recovering';
@@ -988,7 +990,6 @@ async function main() {
       ownerSigRaw,
       scanId,
     ]);
-
     const claim = claimGateScanAtomic(scanId, {
       status: 'CLAIMED',
       acted: false,

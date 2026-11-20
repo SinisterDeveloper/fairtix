@@ -7,3 +7,5 @@ artifacts/demo-state.json
 artifacts/activity-log.ndjson
 artifacts/volume-manifest.ndjson.gz
 *.log
+web/.next/
+web/tsconfig.tsbuildinfo

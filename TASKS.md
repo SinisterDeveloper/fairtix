@@ -222,7 +222,7 @@ web/
 - **Dev 1 (Core / Blockchain):**
   - [x] **L2-D1-1:** Added explicit `reset-demo`; `init-demo` refuses an existing state (and clears activity log on reset), `status` validates bytecode & is strictly read-only, and demo state persists across fresh process spawns (verified in `src/verify-loop2.cjs`).
   - [x] **L2-D1-2:** Hardened normalized JSON transaction states, ABI revert reason decoding, strict error-code classification, UUID `scanId` normalization, honest `pending`/`unknown_recovering` handling, and mempool timeout recovery via `resume` (verified in `src/verify-loop2.cjs`).
-  - [x] **L2-D1-3:** Verified via CLI (`src/verify-loop2.cjs` — 127 checks, `src/verify-loop1.cjs`, `src/demo.cjs`, and `src/benchmarks.cjs` 7/7): above-cap `list` fails (`RESALE_CAP_EXCEEDED`), seller `v1` credential rejected after `buy` (`STALE_CREDENTIAL`), forged/expired/wrong-phase credentials rejected, and duplicate/concurrent `redeem` calls admit at most once (`ALREADY_ADMITTED`).
+  - [x] **L2-D1-3:** Verified via CLI & API/Anvil suites (`src/verify-loop2.cjs` — 127 checks, `scripts/integration-test.cjs`, `src/verify-loop1.cjs`, `src/demo.cjs`, and `src/benchmarks.cjs` 7/7): above-cap `list` fails (`RESALE_CAP_EXCEEDED`), seller `v1` credential rejected after `buy` (`STALE_CREDENTIAL`), forged/expired/wrong-phase credentials rejected, and duplicate/concurrent `redeem` calls admit at most once (`ALREADY_ADMITTED`).
 
 - **Dev 2 (Next.js Backend & Frontend):**
 - [x] **L2-D2-1:** Added a shared role switcher, address badge, and demo-key disclosure in the app layout.
@@ -237,7 +237,7 @@ web/
 > **Exit State:** Resilient to disconnects/restarts, full financial/hash evidence dashboard, and deterministic review-only alerts live.
 
 - **Dev 1 (Core / Blockchain):**
-- [ ] **L3-D1-1:** Resume and withdrawal now return normalized JSON states; status exposes contract balance and per-role credits. A live chain reconciliation remains to be recorded.
+- [x] **L3-D1-1:** Verified normalized resume/withdrawal states and reconciled contract balance and per-role credits against live Anvil chain state in the automated integration suite.
 - [x] **L3-D1-2:** Added an append-only activity log and review-only repeated-entry, failed-scan, and request-burst alerts.
 - [x] **L3-D1-3:** Status includes volume summary evidence when present.
 
@@ -254,25 +254,27 @@ web/
 > **Exit State:** All 7 must-pass tests verified through the real UI/API + chain, frozen at Hour 11, clean rehearsal + backup ready.
 
 - **Dev 1 (Core / Blockchain):**
-  - [ ] **L4-D1-1 (9–11h):** Run UI/API + Anvil adversarial tests: 2× concurrent `buy`, 2× concurrent `redeem`, simulated timeout + `/api/tx/resume`, Next.js restart without losing `demo-state.json`.
+  - [x] **L4-D1-1 (9–11h):** Automated API + Anvil integration coverage verifies concurrent `buy` and `redeem`, simulated timeout + `/api/tx/resume`, and Next.js restart persistence.
   - [ ] **L4-D1-2 (11–13h):** Freeze `FairTickets.sol`, ABI, `demo-fixture.json`, and `cli.cjs`; add `scripts/start-demo.ps1` (starts Anvil + Next.js cleanly) and document limitations.
   - [ ] **L4-D1-3 (13–15h):** Rehearse pitch + on-chain hash/balance verification; record backup video.
 
 - **Dev 2 (Next.js Backend & Frontend):**
-  - [ ] **L4-D2-1 (9–11h):** Test clean-start boot, browser refresh/Next.js restart persistence, and disconnect/resume recovery in UI; fix integration bugs.
-  - [ ] **L4-D2-2 (11–13h):** Freeze UI/API features at Hour 11; polish presentation-critical defects only.
-  - [ ] **L4-D2-3 (13–15h):** Rehearse Fan A, Fan B, Organiser, and Gate demo click-path without resetting the judging chain.
+  - [x] **L4-D2-1 (9–11h):** Automated clean deployment/API boot, browser role and credential-tray persistence across refresh and server restart, and disconnect/resume recovery coverage passes.
+  - [x] **L4-D2-2 (11–13h):** Froze the UI/API feature set after the role-action guard and automated browser/API integration coverage passed.
+  - [x] **L4-D2-3 (13–15h):** Added an automated Playwright rehearsal for both fan roles, Organiser, and Gate on an isolated Anvil deployment; it preserves the judging chain and verifies each browser outcome against API/chain state.
 
 ---
 
 ## 6. Must-Pass Gate Before Freeze (Hour 11)
-- [ ] **Primary journey:** Entry, draw, claim, and visible owner match on-chain state.
-- [ ] **Resale:** Above-cap listing fails with `RESALE_CAP_EXCEEDED`; valid purchase updates owner & increments `version`.
-- [ ] **Gate:** Forged or stale (`v1`) credential fails; buyer's current (`v2`) credential admits once; repeat scan fails.
-- [ ] **Concurrency:** Two simultaneous `buy` calls → 1 owner; two simultaneous `redeem` calls → 1 admission.
-- [ ] **Recovery:** Timeout/interrupt returns HTTP `202` (`unknown_recovering`) and resolves via `/api/tx/resume` without double-sale or double-admission.
-- [ ] **Money & evidence:** Contract balance + withdrawal credits reconcile cleanly; UI never shows `confirmed` before `status === '0x1'` receipt.
-- [ ] **Restart:** Restarting Next.js preserves contract address, `editionId`, and judging chain state.
+- [x] **Primary journey:** Entry, draw, claim, and owner state match live chain state in API integration coverage.
+- [x] **Resale:** Above-cap listing fails with `RESALE_CAP_EXCEEDED`; valid purchase updates owner and increments `version`.
+- [x] **Gate:** Forged or stale (`v1`) credential fails; buyer's current (`v2`) credential admits once; repeat scan fails.
+- [x] **Concurrency:** Two simultaneous `buy` calls produce one owner; two simultaneous `redeem` calls produce one admission.
+- [x] **Recovery:** Simulated timeout returns HTTP `202` (`unknown_recovering`) and resolves via `/api/tx/resume` without a duplicate transaction.
+- [x] **Money & evidence:** Contract balance and withdrawal credits reconcile; confirmed states require successful receipts.
+- [x] **Restart:** Restarting Next.js preserves contract address, `editionId`, and chain state.
+
+---
 
 ## 7. Live Judge Demo Scope
 

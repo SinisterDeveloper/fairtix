@@ -5,7 +5,7 @@ import type { ApiMutationResponse, RoleId } from './types';
 const repoRoot = path.resolve(process.cwd(), '..');
 const cliPath = path.join(repoRoot, 'src', 'cli.cjs');
 
-export function runCli(args: string[], timeoutMs = 15_000): Promise<Record<string, unknown>> {
+export function runCli(args: string[], timeoutMs = Number(process.env.FAIRTICKETS_CLI_TIMEOUT_MS || 15_000)): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cliPath, ...args, '--json'], { cwd: repoRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
