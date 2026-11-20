@@ -14,7 +14,10 @@ const invoke = async (args: string[]) => {
 
 export async function GET(_req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
-  if (path.join('/') === 'status') return NextResponse.json(await runCli(['status']));
+  if (path.join('/') === 'status') {
+    const status = await runCli(['status']);
+    return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
+  }
   if (path.join('/') === 'organiser/alerts') return NextResponse.json(await runCli(['alerts']));
   return NextResponse.json({ ok: false, error: 'Unknown API route' }, { status: 404 });
 }
@@ -56,7 +59,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       return invoke(['redeem', '--role', 'gate', '--scan-id', str(body.scanId || crypto.randomUUID()), '--slot', str(credential.slot), '--version', str(credential.version), '--expiry', str(credential.expiry), '--owner-sig', str(credential.ownerSig), ...json]);
     }
     case 'withdraw': return invoke(['withdraw', ...roleFlags, ...json]);
-    case 'tx/resume': return invoke(['resume', ...roleFlags, ...(body.scanId ? ['--scan-id', str(body.scanId)] : []), ...json]);
+    case 'tx/resume': return invoke(['resume', ...roleFlags, ...(body.scanId ? ['--scan-id', str(body.scanId)] : []), ...(body.txHash ? ['--tx-hash', str(body.txHash)] : []), ...json]);
     default: return NextResponse.json({ ok: false, error: 'Unknown API route' }, { status: 404 });
   }
 }

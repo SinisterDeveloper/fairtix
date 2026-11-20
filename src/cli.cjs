@@ -18,6 +18,21 @@ function logActivity(event) {
   appendFileSync(activityLogPath, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + '\n', { mode: 0o600 });
 }
 
+function classifyErrorCode(message, command) {
+  const reason = String(message || '').toLowerCase();
+  if (reason.includes('cap')) return 'RESALE_CAP_EXCEEDED';
+  if (reason.includes('version mismatch') || reason.includes('stale credential')) return 'STALE_CREDENTIAL';
+  if (reason.includes('already admitted')) return 'ALREADY_ADMITTED';
+  if (reason.includes('scan id') && (reason.includes('claimed') || reason.includes('finalized'))) return 'ALREADY_ADMITTED';
+  if (reason.includes('already claimed')) return 'ALREADY_CLAIMED';
+  if (reason.includes('not a winner')) return 'NOT_WINNER';
+  if (reason.includes('listing not active') || reason.includes('already listed')) return 'LISTING_NOT_ACTIVE';
+  if (reason.includes('incorrect payment') || reason.includes('price mismatch')) return 'INSUFFICIENT_PAYMENT';
+  if (reason.includes('signature') || reason.includes('only gate') || reason.includes('ticket not issued') || command === 'redeem') return 'FORGED_CREDENTIAL';
+  if (reason.includes('phase') || reason.includes('window') || reason.includes('entry closed') || reason.includes('draw')) return 'WRONG_PHASE';
+  return 'INTERNAL_ERROR';
+}
+
 function loadArtifact() {
   if (!existsSync(artifactPath)) {
     throw new Error('Missing artifacts/FairTickets.json. Run `node src/compile.cjs` first.');
@@ -376,17 +391,14 @@ async function main() {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             const status = value.status;
             const gateDecision = value.decision;
-            if (jsonMode && (status === '0x1' || gateDecision === 'ADMIT')) value.txStatus = 'confirmed';
+            if (jsonMode && gateDecision === 'ADMIT') value.txStatus = 'confirmed';
+            else if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') value.txStatus = 'unknown_recovering';
+            else if (jsonMode && gateDecision === 'ALREADY_FINALIZED') value.txStatus = value.prior?.decision === 'ADMIT' ? 'confirmed' : value.prior?.decision === 'REJECT' ? 'rejected' : 'unknown_recovering';
+            else if (jsonMode && (status === '0x1')) value.txStatus = 'confirmed';
             else if (jsonMode && (status === '0x0' || gateDecision === 'REJECT')) value.txStatus = 'rejected';
             if (jsonMode && value.txHash) value.txHash = String(value.txHash);
             if (jsonMode && value.txStatus === 'rejected') {
-              const reason = String(value.reason || '').toLowerCase();
-              value.errorCode = reason.includes('cap') ? 'RESALE_CAP_EXCEEDED'
-                : reason.includes('version mismatch') ? 'STALE_CREDENTIAL'
-                  : reason.includes('already admitted') ? 'ALREADY_ADMITTED'
-                    : reason.includes('winner') ? 'NOT_WINNER'
-                      : reason.includes('signature') || reason.includes('only gate') ? 'FORGED_CREDENTIAL'
-                        : 'WRONG_PHASE';
+              value.errorCode = classifyErrorCode(value.reason, cmd);
               value.error = value.reason || 'The contract rejected this transaction.';
               value.reason = value.error;
             }
@@ -743,9 +755,11 @@ async function main() {
       throw new Error('resume requires --address or --key');
     }
     const targetOpId = opts['op-id'] || opts['scan-id'] || null;
+    const targetTxHash = opts['tx-hash'] ? String(opts['tx-hash']).toLowerCase() : null;
     const entries = await withWalletLock(address, () => readJournal(address));
     const needsWork = entries.filter((e) => {
       if (targetOpId && e.opId !== targetOpId) return false;
+      if (targetTxHash && String(e.txHash).toLowerCase() !== targetTxHash) return false;
       if (e.status === 'PENDING') return true;
       if (e.meta?.kind === 'gate-redeem' && !existsSync(getGateFinalPath(e.meta.scanId))) {
         return true;
@@ -919,9 +933,9 @@ if (require.main === module) {
       scanId: parsed.opts['scan-id'] || null, success: false, error: err.message || String(err) }); } catch {}
     if (parsed.opts.json) {
       const message = err.message || String(err);
-      const unavailable = /timeout|timed out|network|rpc|socket|fetch failed/i.test(message);
+      const unavailable = /timeout|timed out|network|rpc|socket|fetch failed|connection reset|econn|missing rpc response/i.test(message);
       console.log(JSON.stringify({ ok: false, txStatus: unavailable ? 'unknown_recovering' : 'rejected', txHash: null,
-        errorCode: unavailable ? 'RPC_TIMEOUT' : 'INTERNAL_ERROR', error: message, reason: message }, null, 2));
+        errorCode: unavailable ? 'RPC_TIMEOUT' : classifyErrorCode(message, parsed.cmd), error: message, reason: message }, null, 2));
     } else console.error(err.message || err);
     process.exit(1);
   });
