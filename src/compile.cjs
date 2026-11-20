@@ -25,7 +25,6 @@ const fairTicketsArtifact = {
   bytecode: '0x' + fairTickets.evm.bytecode.object,
   deployedBytecode: '0x' + fairTickets.evm.deployedBytecode.object,
   templateBytecodeHash: ethers.keccak256('0x' + fairTickets.evm.deployedBytecode.object),
-  deployedBytecodeHash: ethers.keccak256('0x' + fairTickets.evm.deployedBytecode.object),
 };
 writeFileSync(join(artifactsDir, 'FairTickets.json'), JSON.stringify(fairTicketsArtifact, null, 2));
 
@@ -40,5 +39,5 @@ const rejectingArtifact = {
 };
 writeFileSync(join(artifactsDir, 'RejectingReceiver.json'), JSON.stringify(rejectingArtifact, null, 2));
 
-console.log(`Compiled FairTickets.sol (${fairTicketsArtifact.bytecode.length / 2 - 1} bytes initcode, codeHash=${fairTicketsArtifact.deployedBytecodeHash})`);
+console.log(`Compiled FairTickets.sol (${fairTicketsArtifact.bytecode.length / 2 - 1} bytes initcode, templateCodeHash=${fairTicketsArtifact.templateBytecodeHash})`);
 console.log(`Compiled RejectingReceiver.sol`);

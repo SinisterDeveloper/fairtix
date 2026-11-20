@@ -68,17 +68,26 @@ async function sendBurstAndMine(rpc, rpcBatch, signedTxs) {
   const rpcErrors = [];
   const t0 = performance.now();
 
+  // Submit all transactions concurrently in one burst using parallel JSON-RPC batches
+  // (avoids OS ephemeral socket exhaustion on 1,000 simultaneous raw HTTP sockets while
+  // delivering the entire 1,000-tx burst concurrently before any block is mined).
+  const batchSize = 50;
+  const chunks = [];
+  for (let i = 0; i < signedTxs.length; i += batchSize) {
+    chunks.push({ offset: i, txs: signedTxs.slice(i, i + batchSize) });
+  }
+
   await Promise.all(
-    signedTxs.map(async (raw, idx) => {
-      inFlight++;
+    chunks.map(async ({ offset, txs }) => {
+      inFlight += txs.length;
       if (inFlight > peakConcurrency) peakConcurrency = inFlight;
       try {
-        const hash = await rpc('eth_sendRawTransaction', [raw]);
-        accepted.push({ idx, hash });
+        const hashes = await rpcBatch(txs.map((raw) => ['eth_sendRawTransaction', [raw]]));
+        hashes.forEach((hash, j) => accepted.push({ idx: offset + j, hash }));
       } catch (err) {
-        rpcErrors.push({ idx, message: err.message });
+        rpcErrors.push({ offset, message: err.message });
       } finally {
-        inFlight--;
+        inFlight -= txs.length;
       }
     })
   );
@@ -890,10 +899,13 @@ async function benchmark7(port) {
     const fanA = makeWallet(7001);
     const fanB = makeWallet(7002);
     const fanC = makeWallet(7003);
+    const fanD = makeWallet(7004);
+    const fanE = makeWallet(7005);
+    const fanF = makeWallet(7006);
 
     await fundWallets(rpcBatch, [
       deployer.address, organiser.address, attester.address, gate.address,
-      fanA.address, fanB.address, fanC.address,
+      fanA.address, fanB.address, fanC.address, fanD.address, fanE.address, fanF.address,
     ]);
 
     const { address: contractAddr, editionId, runtimeCodeHash } = await deployFairTickets(rpc, rpcBatch, deployer, 0, {
@@ -904,7 +916,7 @@ async function benchmark7(port) {
     });
     const contract = new ethers.Contract(contractAddr, fairTicketsArtifact.abi, provider);
 
-    for (const [label, fan] of [['A', fanA], ['B', fanB], ['C', fanC]]) {
+    for (const [label, fan] of [['A', fanA], ['B', fanB], ['C', fanC], ['D', fanD], ['E', fanE], ['F', fanF]]) {
       const subj = ethers.id(`b7-fan${label}`);
       const attSig = await signAttestation(attester, CHAIN_ID, contractAddr, editionId, subj, fan.address, 9999999999n);
       await sendOne(rpc, rpcBatch, fan, 0, contractAddr, iface.encodeFunctionData('enter', [subj, 9999999999n, attSig]));
@@ -920,9 +932,12 @@ async function benchmark7(port) {
     const slotA = Number(await contract.winnerSlot(fanA.address));
     const slotB = Number(await contract.winnerSlot(fanB.address));
     const slotC = Number(await contract.winnerSlot(fanC.address));
-    await sendOne(rpc, rpcBatch, fanA, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
-    await sendOne(rpc, rpcBatch, fanB, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
-    await sendOne(rpc, rpcBatch, fanC, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
+    const slotD = Number(await contract.winnerSlot(fanD.address));
+    const slotE = Number(await contract.winnerSlot(fanE.address));
+    const slotF = Number(await contract.winnerSlot(fanF.address));
+    for (const fan of [fanA, fanB, fanC, fanD, fanE, fanF]) {
+      await sendOne(rpc, rpcBatch, fan, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
+    }
 
     await advanceTime(rpc, 7400); // enter GATE
     const block = await rpc('eth_getBlockByNumber', ['latest', false]);
@@ -1015,7 +1030,83 @@ async function benchmark7(port) {
     ], { encoding: 'utf8' });
     const resume2 = JSON.parse(resumeOut2);
     assert(resume2.resumedCount === 0, `Second resume must have resumedCount 0, got ${resume2.resumedCount}`);
-    assert(Number(await contract.admittedCount()) === 3, 'Total admittedCount must be 3');
+
+    // Test C: Crash AFTER journal marked CONFIRMED, BEFORE gate finalization + concurrent `resume` race
+    const ownerSigD = await signGateCredential(fanD, CHAIN_ID, contractAddr, editionId, BigInt(slotD), 1n, expiry);
+    const confirmedGapScanId = ethers.id(`cli-confirmed-gap-${Date.now()}`);
+    const gateNonceD = Number(BigInt(await rpc('eth_getTransactionCount', [gate.address, 'pending'])));
+    const dataD = iface.encodeFunctionData('redeem', [BigInt(slotD), 1n, expiry, ownerSigD, confirmedGapScanId]);
+    const rawD = await signTx(gate, gateNonceD, contractAddr, dataD, 0n, 250_000n);
+    const txHashD = ethers.keccak256(rawD);
+    await rpc('eth_sendRawTransaction', [rawD]);
+    const receiptD = await rpc('eth_getTransactionReceipt', [txHashD]);
+    assert(receiptD && receiptD.status === '0x1', 'Test C tx must be mined');
+
+    const jCur = JSON.parse(readFileSync(journalPath, 'utf8'));
+    jCur.push({
+      opId: confirmedGapScanId,
+      nonce: gateNonceD,
+      to: contractAddr,
+      txHash: txHashD,
+      signedBytes: rawD,
+      status: 'CONFIRMED',
+      meta: { kind: 'gate-redeem', contract: contractAddr, scanId: confirmedGapScanId, slot: String(slotD), version: '1' },
+      timestamp: new Date().toISOString(),
+    });
+    writeFileSync(journalPath, JSON.stringify(jCur, null, 2));
+    writeFileSync(join(root, 'artifacts', 'gate-claims', `${confirmedGapScanId}.json`), JSON.stringify({
+      status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotD), version: '1',
+    }, null, 2));
+
+    // Race two concurrent `resume` processes on the unfinalized CONFIRMED entry
+    const [r1, r2] = await Promise.all([
+      execFileAsync(process.execPath, [cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--op-id', confirmedGapScanId], { encoding: 'utf8' }),
+      execFileAsync(process.execPath, [cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--op-id', confirmedGapScanId], { encoding: 'utf8' }),
+    ]);
+    const resList = [JSON.parse(r1.stdout), JSON.parse(r2.stdout)];
+    const admitWins = resList.filter((r) => r.resumed.some((x) => x.gateDecision === 'ADMIT' && x.wonFinalization === true));
+    assert(admitWins.length === 1, `Expected exactly 1 ADMIT winner across concurrent resumes, got ${admitWins.length}`);
+
+    // Test D: Crash BEFORE journal creation (gate claim file exists, no journal entry, no final file)
+    const abortedScanId = ethers.id(`cli-prejournal-${Date.now()}`);
+    writeFileSync(join(root, 'artifacts', 'gate-claims', `${abortedScanId}.json`), JSON.stringify({
+      status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotD), version: '1',
+    }, null, 2));
+    const { stdout: preJournalOut1 } = await execFileAsync(process.execPath, [
+      cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
+    ], { encoding: 'utf8' });
+    const pj1 = JSON.parse(preJournalOut1);
+    assert(pj1.resumedCount === 1 && pj1.resumed[0].gateDecision === 'ABORTED_BEFORE_SEND' && pj1.resumed[0].wonFinalization === true,
+      `Expected ABORTED_BEFORE_SEND, got ${preJournalOut1}`);
+    const { stdout: preJournalOut2 } = await execFileAsync(process.execPath, [
+      cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
+    ], { encoding: 'utf8' });
+    assert(JSON.parse(preJournalOut2).resumedCount === 0, 'Second pre-journal resume must be a no-op');
+
+    // Test E: Two concurrent `cli.cjs redeem` processes for DIFFERENT scanIds sharing the same gate wallet
+    const ownerSigE = await signGateCredential(fanE, CHAIN_ID, contractAddr, editionId, BigInt(slotE), 1n, expiry);
+    const ownerSigF = await signGateCredential(fanF, CHAIN_ID, contractAddr, editionId, BigInt(slotF), 1n, expiry);
+    const scanIdE = ethers.id(`cli-shared-E-${Date.now()}`);
+    const scanIdF = ethers.id(`cli-shared-F-${Date.now()}`);
+    const [resE, resF] = await Promise.all([
+      execFileAsync(process.execPath, [
+        cliPath, 'redeem', '--rpc', endpoint, '--key', gate.privateKey,
+        '--contract', contractAddr, '--slot', String(slotE), '--version', '1',
+        '--expiry', expiry.toString(), '--sig', ownerSigE, '--scan-id', scanIdE,
+      ], { encoding: 'utf8' }),
+      execFileAsync(process.execPath, [
+        cliPath, 'redeem', '--rpc', endpoint, '--key', gate.privateKey,
+        '--contract', contractAddr, '--slot', String(slotF), '--version', '1',
+        '--expiry', expiry.toString(), '--sig', ownerSigF, '--scan-id', scanIdF,
+      ], { encoding: 'utf8' }),
+    ]);
+    assert(JSON.parse(resE.stdout).decision === 'ADMIT', 'Shared-wallet concurrent scan E must ADMIT');
+    assert(JSON.parse(resF.stdout).decision === 'ADMIT', 'Shared-wallet concurrent scan F must ADMIT');
+    const finalJournal = JSON.parse(readFileSync(journalPath, 'utf8'));
+    const entryE = finalJournal.find((e) => e.opId === scanIdE && e.status === 'CONFIRMED');
+    const entryF = finalJournal.find((e) => e.opId === scanIdF && e.status === 'CONFIRMED');
+    assert(entryE && entryF && entryE.nonce !== entryF.nonce, 'Both shared-wallet entries must persist with distinct nonces');
+    assert(Number(await contract.admittedCount()) === 6, 'Total admittedCount must be 6');
 
     const admittedGas = Number(BigInt(admitted[0].gasUsed));
     const failedGasTotal = denied.reduce((acc, r) => acc + Number(BigInt(r.gasUsed)), 0);
@@ -1030,8 +1121,11 @@ async function benchmark7(port) {
         denied: denied.length,
         admittedGas,
         failedGasTotal,
-        cliConcurrentLockVerified: true,
-        cliCrashResumeVerified: true,
+        cliConcurrentSameScanLockVerified: true,
+        cliConcurrentSharedWalletVerified: true,
+        cliCrashResumePendingVerified: true,
+        cliCrashResumeConfirmedGapRaceVerified: true,
+        cliCrashResumePreJournalVerified: true,
       },
     };
   } finally {

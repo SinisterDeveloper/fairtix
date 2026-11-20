@@ -1,5 +1,5 @@
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync, existsSync, openSync, closeSync, renameSync } = require('node:fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, openSync, closeSync, renameSync, unlinkSync, writeSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
@@ -39,8 +39,44 @@ function getJournalPath(address) {
   return join(journalDir, `${address.toLowerCase()}.json`);
 }
 
+function getWalletLockPath(address) {
+  mkdirSync(journalDir, { recursive: true });
+  return join(journalDir, `${address.toLowerCase()}.lock`);
+}
+
+async function withWalletLock(address, fn, timeoutMs = 10_000) {
+  const lockPath = getWalletLockPath(address);
+  const deadline = Date.now() + timeoutMs;
+  let fd = null;
+  while (fd === null) {
+    try {
+      fd = openSync(lockPath, 'wx');
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        if (Date.now() > deadline) {
+          throw new Error(`Timed out acquiring wallet lock for ${address}`);
+        }
+        await delay(15);
+        continue;
+      }
+      throw err;
+    }
+  }
+  try {
+    writeSync(fd, `${process.pid}\n`);
+    closeSync(fd);
+    fd = null;
+    return await fn();
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch {}
+    }
+    try { unlinkSync(lockPath); } catch {}
+  }
+}
+
 function writeJsonAtomic(filePath, data) {
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(data, null, 2));
   renameSync(tmpPath, filePath);
 }
@@ -51,27 +87,35 @@ function readJournal(address) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
-function writeJournalEntry(address, entry) {
+function writeJournalEntryUnlocked(address, entry) {
   const p = getJournalPath(address);
   const existing = readJournal(address);
   existing.push(entry);
   writeJsonAtomic(p, existing);
 }
 
-function updateJournalEntry(address, txHash, patch) {
-  const p = getJournalPath(address);
-  const existing = readJournal(address);
-  const idx = existing.findIndex((e) => e.txHash === txHash);
-  if (idx >= 0) {
-    existing[idx] = { ...existing[idx], ...patch };
-    writeJsonAtomic(p, existing);
-  }
+async function updateJournalEntry(address, txHash, patch) {
+  return withWalletLock(address, () => {
+    const p = getJournalPath(address);
+    const existing = readJournal(address);
+    const idx = existing.findIndex((e) => e.txHash === txHash);
+    if (idx >= 0) {
+      existing[idx] = { ...existing[idx], ...patch };
+      writeJsonAtomic(p, existing);
+    }
+  });
 }
 
 function getGateClaimPath(scanId) {
   mkdirSync(gateClaimsDir, { recursive: true });
   const safe = scanId.replace(/[^a-zA-Z0-9_-]/g, '_');
   return join(gateClaimsDir, `${safe}.json`);
+}
+
+function getGateFinalPath(scanId) {
+  mkdirSync(gateClaimsDir, { recursive: true });
+  const safe = scanId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return join(gateClaimsDir, `${safe}.final.json`);
 }
 
 function claimGateScanAtomic(scanId, initialData) {
@@ -86,18 +130,37 @@ function claimGateScanAtomic(scanId, initialData) {
     throw err;
   }
   try {
-    const payload = JSON.stringify(initialData, null, 2);
-    require('node:fs').writeSync(fd, payload);
+    writeSync(fd, JSON.stringify(initialData, null, 2));
   } finally {
     closeSync(fd);
   }
   return { claimed: true, claimPath };
 }
 
-function updateGateClaim(scanId, patch) {
+function tryFinalizeGateDecision(scanId, finalData) {
+  const finalPath = getGateFinalPath(scanId);
+  let fd;
+  try {
+    fd = openSync(finalPath, 'wx');
+  } catch (err) {
+    if (err && err.code === 'EEXIST') {
+      const existing = existsSync(finalPath) ? JSON.parse(readFileSync(finalPath, 'utf8')) : null;
+      return { wonFinalization: false, existing };
+    }
+    throw err;
+  }
+  const record = { ...finalData, pid: process.pid, finalizedAt: new Date().toISOString() };
+  try {
+    writeSync(fd, JSON.stringify(record, null, 2));
+  } finally {
+    closeSync(fd);
+  }
   const claimPath = getGateClaimPath(scanId);
-  const current = existsSync(claimPath) ? JSON.parse(readFileSync(claimPath, 'utf8')) : {};
-  writeJsonAtomic(claimPath, { ...current, ...patch });
+  if (existsSync(claimPath)) {
+    const current = JSON.parse(readFileSync(claimPath, 'utf8'));
+    writeJsonAtomic(claimPath, { ...current, status: record.status || current.status, acted: true, txHash: record.txHash || current.txHash });
+  }
+  return { wonFinalization: true, record };
 }
 
 function parseAdmittedEvent(iface, contractAddress, receipt, scanId, slot, version) {
@@ -130,39 +193,47 @@ async function waitForReceipt(rpc, txHash, maxPolls = 60) {
 }
 
 async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_000n, opId = null, meta = null }) {
-  const nonceHex = await rpc('eth_getTransactionCount', [wallet.address, 'pending']);
-  const nonce = Number(BigInt(nonceHex));
-  const chainIdHex = await rpc('eth_chainId');
-  const chainId = Number(BigInt(chainIdHex));
+  const { txHash } = await withWalletLock(wallet.address, async () => {
+    const nonceHex = await rpc('eth_getTransactionCount', [wallet.address, 'pending']);
+    const rpcPendingNonce = Number(BigInt(nonceHex));
+    const localPendingMax = readJournal(wallet.address)
+      .filter((e) => e.status === 'PENDING')
+      .reduce((max, e) => Math.max(max, e.nonce), -1);
+    const nonce = Math.max(rpcPendingNonce, localPendingMax + 1);
 
-  const signed = await wallet.signTransaction({
-    chainId,
-    type: 2,
-    nonce,
-    to: to || undefined,
-    data,
-    value,
-    gasLimit,
-    maxFeePerGas: 2_000_000_000n,
-    maxPriorityFeePerGas: 1_000_000_000n,
+    const chainIdHex = await rpc('eth_chainId');
+    const chainId = Number(BigInt(chainIdHex));
+
+    const signed = await wallet.signTransaction({
+      chainId,
+      type: 2,
+      nonce,
+      to: to || undefined,
+      data,
+      value,
+      gasLimit,
+      maxFeePerGas: 2_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000_000n,
+    });
+    const hash = ethers.keccak256(signed);
+
+    writeJournalEntryUnlocked(wallet.address, {
+      opId: opId || `${Date.now()}-${nonce}`,
+      nonce,
+      to: to || null,
+      txHash: hash,
+      signedBytes: signed,
+      status: 'PENDING',
+      meta: meta || undefined,
+      timestamp: new Date().toISOString(),
+    });
+
+    await rpc('eth_sendRawTransaction', [signed]);
+    return { txHash: hash };
   });
-  const txHash = ethers.keccak256(signed);
-
-  writeJournalEntry(wallet.address, {
-    opId: opId || `${Date.now()}-${nonce}`,
-    nonce,
-    to: to || null,
-    txHash,
-    signedBytes: signed,
-    status: 'PENDING',
-    meta: meta || undefined,
-    timestamp: new Date().toISOString(),
-  });
-
-  await rpc('eth_sendRawTransaction', [signed]);
 
   const receipt = await waitForReceipt(rpc, txHash);
-  updateJournalEntry(wallet.address, txHash, {
+  await updateJournalEntry(wallet.address, txHash, {
     status: receipt.status === '0x1' ? 'CONFIRMED' : 'REVERTED',
     blockNumber: Number(BigInt(receipt.blockNumber)),
     gasUsed: Number(BigInt(receipt.gasUsed)),
@@ -438,19 +509,31 @@ async function main() {
     });
 
     if (receipt.status !== '0x1') {
-      updateGateClaim(scanId, { status: 'REJECTED', acted: true, txHash });
+      const fin = tryFinalizeGateDecision(scanId, { decision: 'REJECT', status: 'REJECTED', txHash, slot: String(opts.slot), version: String(opts.version) });
+      if (!fin.wonFinalization) {
+        console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        return;
+      }
       console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, scanId }, null, 2));
       return;
     }
 
     const admittedEvent = parseAdmittedEvent(iface, opts.contract, receipt, scanId, opts.slot, opts.version);
     if (!admittedEvent) {
-      updateGateClaim(scanId, { status: 'HOLD_FOR_STAFF', acted: true, txHash });
+      const fin = tryFinalizeGateDecision(scanId, { decision: 'HOLD_FOR_STAFF', status: 'HOLD_FOR_STAFF', txHash, slot: String(opts.slot), version: String(opts.version) });
+      if (!fin.wonFinalization) {
+        console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        return;
+      }
       console.log(JSON.stringify({ decision: 'HOLD_FOR_STAFF', reason: 'Missing or mismatched Admitted log', txHash, scanId }, null, 2));
       return;
     }
 
-    updateGateClaim(scanId, { status: 'ADMITTED', acted: true, txHash });
+    const fin = tryFinalizeGateDecision(scanId, { decision: 'ADMIT', status: 'ADMITTED', txHash, slot: String(opts.slot), version: String(opts.version) });
+    if (!fin.wonFinalization) {
+      console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+      return;
+    }
     console.log(JSON.stringify({ decision: 'ADMIT', txHash, scanId, slot: opts.slot, version: opts.version }, null, 2));
     return;
   }
@@ -460,13 +543,19 @@ async function main() {
     if (!address) {
       throw new Error('resume requires --address or --key');
     }
-    const entries = readJournal(address);
-    const pending = entries.filter(
-      (e) => e.status === 'PENDING' && (!opts['op-id'] || e.opId === opts['op-id'])
-    );
+    const targetOpId = opts['op-id'] || opts['scan-id'] || null;
+    const entries = await withWalletLock(address, () => readJournal(address));
+    const needsWork = entries.filter((e) => {
+      if (targetOpId && e.opId !== targetOpId) return false;
+      if (e.status === 'PENDING') return true;
+      if (e.meta?.kind === 'gate-redeem' && !existsSync(getGateFinalPath(e.meta.scanId))) {
+        return true;
+      }
+      return false;
+    });
     const resumed = [];
 
-    for (const entry of pending) {
+    for (const entry of needsWork) {
       let receipt = await rpc('eth_getTransactionReceipt', [entry.txHash]);
       if (!receipt) {
         try {
@@ -481,31 +570,33 @@ async function main() {
       }
 
       const finalStatus = receipt.status === '0x1' ? 'CONFIRMED' : 'REVERTED';
-      updateJournalEntry(address, entry.txHash, {
-        status: finalStatus,
-        blockNumber: Number(BigInt(receipt.blockNumber)),
-        gasUsed: Number(BigInt(receipt.gasUsed)),
-        resumedAt: new Date().toISOString(),
-      });
+      if (entry.status === 'PENDING') {
+        await updateJournalEntry(address, entry.txHash, {
+          status: finalStatus,
+          blockNumber: Number(BigInt(receipt.blockNumber)),
+          gasUsed: Number(BigInt(receipt.gasUsed)),
+          resumedAt: new Date().toISOString(),
+        });
+      }
 
       let gateDecision = null;
+      let wonFinalization = null;
       if (entry.meta?.kind === 'gate-redeem') {
         const { scanId, contract: contractAddr, slot, version } = entry.meta;
-        const claimPath = getGateClaimPath(scanId);
-        const existingClaim = existsSync(claimPath) ? JSON.parse(readFileSync(claimPath, 'utf8')) : null;
-        if (existingClaim?.acted) {
-          gateDecision = existingClaim.status;
-        } else if (receipt.status !== '0x1') {
-          gateDecision = 'REJECT';
-          updateGateClaim(scanId, { status: 'REJECTED', acted: true, txHash: entry.txHash, resumed: true });
+        if (receipt.status !== '0x1') {
+          const fin = tryFinalizeGateDecision(scanId, { decision: 'REJECT', status: 'REJECTED', txHash: entry.txHash, slot, version, resumed: true });
+          wonFinalization = fin.wonFinalization;
+          gateDecision = fin.wonFinalization ? 'REJECT' : 'ALREADY_FINALIZED';
         } else {
           const admittedEvent = parseAdmittedEvent(iface, contractAddr, receipt, scanId, slot, version);
           if (admittedEvent) {
-            gateDecision = 'ADMIT';
-            updateGateClaim(scanId, { status: 'ADMITTED', acted: true, txHash: entry.txHash, resumed: true });
+            const fin = tryFinalizeGateDecision(scanId, { decision: 'ADMIT', status: 'ADMITTED', txHash: entry.txHash, slot, version, resumed: true });
+            wonFinalization = fin.wonFinalization;
+            gateDecision = fin.wonFinalization ? 'ADMIT' : 'ALREADY_FINALIZED';
           } else {
-            gateDecision = 'HOLD_FOR_STAFF';
-            updateGateClaim(scanId, { status: 'HOLD_FOR_STAFF', acted: true, txHash: entry.txHash, resumed: true });
+            const fin = tryFinalizeGateDecision(scanId, { decision: 'HOLD_FOR_STAFF', status: 'HOLD_FOR_STAFF', txHash: entry.txHash, slot, version, resumed: true });
+            wonFinalization = fin.wonFinalization;
+            gateDecision = fin.wonFinalization ? 'HOLD_FOR_STAFF' : 'ALREADY_FINALIZED';
           }
         }
       }
@@ -515,7 +606,29 @@ async function main() {
         txHash: entry.txHash,
         status: finalStatus,
         gateDecision,
+        wonFinalization,
       });
+    }
+
+    // Handle interrupted pre-journal gate claim (claimed <scanId>.json, crashed before journal write)
+    if (opts['scan-id']) {
+      const scanId = opts['scan-id'];
+      const claimPath = getGateClaimPath(scanId);
+      const hasJournalEntry = entries.some((e) => e.opId === scanId || e.meta?.scanId === scanId);
+      if (existsSync(claimPath) && !hasJournalEntry && !existsSync(getGateFinalPath(scanId))) {
+        const fin = tryFinalizeGateDecision(scanId, {
+          decision: 'ABORTED_BEFORE_SEND',
+          status: 'ABORTED_BEFORE_SEND',
+          resumed: true,
+        });
+        resumed.push({
+          opId: scanId,
+          txHash: null,
+          status: 'NO_TX',
+          gateDecision: fin.wonFinalization ? 'ABORTED_BEFORE_SEND' : 'ALREADY_FINALIZED',
+          wonFinalization: fin.wonFinalization,
+        });
+      }
     }
 
     console.log(JSON.stringify({ address, resumedCount: resumed.length, resumed }, null, 2));
