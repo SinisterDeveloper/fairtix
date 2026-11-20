@@ -230,6 +230,21 @@ export default function FanPage() {
             </label>
           </div>
 
+          {heldTicket && (
+            <div className="preset-row">
+              <button
+                type="button"
+                className="secondary small-btn"
+                onClick={() => {
+                  setSlot(String(heldTicket.slot));
+                  setVersion(String(heldTicket.version));
+                }}
+              >
+                Use my ticket (Slot #{heldTicket.slot}, v{heldTicket.version})
+              </button>
+            </div>
+          )}
+
           <label>
             Resale price (INR)
             <input value={price} onChange={(e) => setPrice(e.target.value)} />
@@ -320,22 +335,45 @@ export default function FanPage() {
             </button>
           </div>
           {tray.length > 0 ? (
-            <ul className="pass-list">
-              {tray.map((c, i) => (
-                <li key={i} className="pass-item">
-                  <div>
-                    <strong>{String(c.label)}</strong>
-                    <span className="meta">
-                      {' '}
-                      · Slot #{String(c.slot)} · v{String(c.version)}
-                    </span>
-                  </div>
-                  <Link className="small-link" href="/gate">
-                    Use at Gate →
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="pass-list">
+                {tray.map((c, i) => {
+                  const isOldEvent =
+                    Boolean(status?.contract && c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase());
+                  return (
+                    <li key={i} className="pass-item">
+                      <div>
+                        <strong>{String(c.label)}</strong>
+                        <span className="meta">
+                          {' '}
+                          · Slot #{String(c.slot)} · v{String(c.version)}
+                        </span>
+                        {isOldEvent && (
+                          <span className="pill warn" style={{ marginLeft: 8 }}>
+                            Old event
+                          </span>
+                        )}
+                      </div>
+                      <Link className="small-link" href="/gate">
+                        Use at Gate →
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="preset-row" style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  onClick={() => {
+                    setTray([]);
+                    localStorage.removeItem('fairtickets-credentials');
+                  }}
+                >
+                  Clear saved passes
+                </button>
+              </div>
+            </>
           ) : (
             <p className="meta">No saved passes yet. Claim or buy a ticket, then sign a pass.</p>
           )}

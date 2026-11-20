@@ -104,11 +104,23 @@ export default function OrganiserPage() {
             </small>
           </div>
           <div className="step-action">
+            <button
+              disabled={busy}
+              className="secondary"
+              onClick={() => void act('organiser/advance-time', { seconds: 301 })}
+            >
+              Advance to next phase (+5m)
+            </button>
+            <small className="meta">
+              3. Fast-forwards the demo clock (Claim → Resale → Gate).
+            </small>
+          </div>
+          <div className="step-action">
             <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
               Withdraw proceeds
             </button>
             <small className="meta">
-              3. Transfers accrued primary-sale proceeds to the organiser wallet.
+              4. Transfers accrued primary-sale proceeds to the organiser wallet.
             </small>
           </div>
         </div>

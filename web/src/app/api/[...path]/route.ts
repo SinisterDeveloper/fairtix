@@ -37,6 +37,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       if (advance.txStatus === 'unknown_recovering') return NextResponse.json(advance, { status: 202 });
       return invoke(['lock-draw', '--role', 'organiser', ...json]);
     }
+    case 'organiser/advance-time': return invoke(['advance-time', '--seconds', String(num(body.seconds, 301)), ...json]);
     case 'organiser/draw': {
       const mined = await runCli(['mine', '--blocks', '2']);
       if (mined.txStatus === 'unknown_recovering') return NextResponse.json(mined, { status: 202 });
