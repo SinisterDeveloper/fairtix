@@ -7,6 +7,7 @@ async function startAnvil({
   chainId = 31337,
   blockTime = null,
   noMining = false,
+  pruneHistory = null,
   accounts = 10,
   balance = '10000',
   mnemonic = null,
@@ -23,6 +24,9 @@ async function startAnvil({
     '--mnemonic', phrase,
     '--silent',
   ];
+  if (pruneHistory !== null) {
+    args.push('--prune-history', String(pruneHistory));
+  }
   if (noMining) {
     args.push('--no-mining');
   } else if (blockTime !== null) {

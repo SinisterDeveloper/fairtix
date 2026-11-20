@@ -1,0 +1,43 @@
+{
+  "chainId": 31337,
+  "editionId": "0x6b870f88617ada9ae39d68c37a8e7e106fcbcfbbb216ea3c6edd5bf420a79c35",
+  "contractAddress": "0xf38b628f4cbee235a16ac1b264f7cd47a6acbd91",
+  "runtimeCodeHash": "0x8b62dfe1174abe2687c37ddb206e959d3ca5994e3cc58abc7875252a27ecbc70",
+  "blockRange": {
+    "first": 2,
+    "last": 1010
+  },
+  "countedWrites": {
+    "enter": 99650,
+    "claim": 100,
+    "list": 100,
+    "buy": 50,
+    "redeem": 100,
+    "total": 100000
+  },
+  "loadDurationMs": 873049,
+  "writesPerSecond": 114.54,
+  "manifestFile": "artifacts/volume-manifest.ndjson.gz",
+  "manifestBytes": 3914094,
+  "manifestSha256": "8673c7d9dcb4717744535809602a9a46d37687605c91886ecc0f969a4f0e2925",
+  "reconciled": {
+    "entrantsCount": 99650,
+    "winnersCount": 100,
+    "issuedCount": 100,
+    "admittedCount": 100,
+    "organiserProceedsWei": "20000000",
+    "resellerProceedsEachWei": "180000",
+    "contractBalanceWei": "29000000"
+  },
+  "journeySample": {
+    "slot1": {
+      "winner": "0x236981cf41E30ea70fb4CFA49c7bb1885AC93293",
+      "enterTx": "0x200f2e422a48034eaebf5d214390004d15e4c2d0b8b93d19e9a201dae61f08c1",
+      "claimTx": "0xf79d31518e57c78da69bb98e5c391ec7a3572bc0d0dc6cdb2cb742871a5cca37",
+      "listTx": "0x0f7552cda38934c93dab1562c454b235234f40c18cd05b09429f88b07a452926",
+      "buyer": "0xF43b1e522A483CBF14F003aDB6693Cd17e86e16A",
+      "buyTx": "0x5cfeb20075198e6027561d16271be8e5ab0005fc2b4cb82ebaef6e850be971a7",
+      "redeemTx": "0x7f2d09bb8812f7032426438b08ab90357433155aad47729a83e3b390748c7083"
+    }
+  }
+}
