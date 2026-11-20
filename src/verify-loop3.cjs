@@ -221,8 +221,11 @@ async function main() {
     const statusAdmitted = runCli(['status', '--json']);
     check(statusAdmitted.admittedCount === 1, 'admittedCount should be exactly 1 after resume');
 
-    const unknownResume = runCliAllowFail(['resume', '--role', 'gate', '--scan-id', `missing-${randomUUID()}`, '--json']);
-    check(unknownResume.data?.ok === false && unknownResume.data?.txStatus === 'rejected', 'resume for unknown scanId should reject cleanly');
+    const resumedAgain = runCli(['resume', '--role', 'gate', '--scan-id', timeoutScanId, '--json']);
+    check(resumedAgain.ok === true && resumedAgain.alreadyFinalized === true && resumedAgain.gateDecision === 'ADMIT', 'idempotent second resume should return alreadyFinalized ADMIT');
+
+    const unknownResume = runCli(['resume', '--role', 'gate', '--scan-id', `missing-${randomUUID()}`, '--json']);
+    check(unknownResume.ok === true && unknownResume.resumedCount === 0, 'resume for unknown scanId should return resumedCount 0 cleanly');
 
     // 6. Verify append-only activity log & reset-demo cleanup
     const activityLogPath = join(stateDir, 'activity-log.ndjson');
