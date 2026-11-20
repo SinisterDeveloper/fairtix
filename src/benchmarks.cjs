@@ -1,6 +1,8 @@
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('node:fs');
-const { execFile } = require('node:child_process');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { setTimeout: delay } = require('node:timers/promises');
+const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const { ethers, signAttestation, signGateCredential } = require('./toolchain.cjs');
@@ -1080,29 +1082,129 @@ async function benchmark7(port) {
     assert(aw.resumedCount === 1 && aw.resumed[0].status === 'ACTIVE_WORKER' && aw.resumed[0].wonFinalization === false,
       `Live starting worker must not be aborted, got ${activeWorkerOut}`);
 
-    // Now simulate that the claiming worker died (dead PID) + left a stale wallet lock
+    // Helper to spawn an OS process holding the kernel wallet lock until killed via SIGKILL
+    async function spawnLockHolder(walletAddress) {
+      const holderScript = [
+        'const { withWalletLock } = require(process.argv[1]);',
+        'withWalletLock(process.argv[2], () => new Promise(() => {',
+        "  process.stdout.write('LOCKED\\n');",
+        '  setInterval(() => {}, 60000);',
+        '})).catch((err) => { console.error(err); process.exit(1); });',
+      ].join('\n');
+      const proc = spawn(process.execPath, ['-e', holderScript, cliPath, walletAddress], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const exitPromise = new Promise((resolveExit) => {
+        proc.once('exit', (code, signal) => resolveExit({ code, signal }));
+      });
+      let out = '';
+      let errOut = '';
+      proc.stderr.on('data', (d) => { errOut += d.toString('utf8'); });
+      await new Promise((resolveReady, rejectReady) => {
+        const onData = (d) => {
+          out += d.toString('utf8');
+          if (out.includes('LOCKED')) {
+            proc.stdout.off('data', onData);
+            resolveReady();
+          }
+        };
+        proc.stdout.on('data', onData);
+        exitPromise.then(({ code, signal }) => {
+          proc.stdout.off('data', onData);
+          rejectReady(new Error(`Lock holder exited prematurely (code=${code}, signal=${signal}): ${errOut}`));
+        });
+      });
+      return {
+        proc,
+        async killAndWait() {
+          if (proc.exitCode === null && proc.signalCode === null) {
+            try { proc.kill('SIGKILL'); } catch {}
+          }
+          await exitPromise;
+        },
+      };
+    }
+
+    // Test D1: Real SIGKILL of active kernel-lock holder during 4-way `resume --scan-id` contention
     writeFileSync(preJournalClaimPath, JSON.stringify({
       status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotD), version: '1', pid: 999999,
     }, null, 2));
-    const staleLockPath = join(root, 'artifacts', 'journal', `${gate.address.toLowerCase()}.lock`);
-    writeFileSync(staleLockPath, JSON.stringify({ pid: 999999, createdAt: Date.now() - 500 }));
+    const finalPathD = join(root, 'artifacts', 'gate-claims', `${abortedScanId}.final.json`);
+    const holder1 = await spawnLockHolder(gate.address);
+    try {
+      const reclaimRacePromise = Promise.all(
+        Array.from({ length: 4 }, () =>
+          execFileAsync(process.execPath, [
+            cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
+          ], { encoding: 'utf8' })
+        )
+      );
+      await delay(350);
+      assert(!existsSync(finalPathD), 'No contender may finalize while live holder still holds kernel lock');
+      await holder1.killAndWait();
 
-    // Race 4 concurrent `resume` processes competing to reclaim the same dead-PID lock
-    const reclaimRace = await Promise.all(
-      Array.from({ length: 4 }, () =>
-        execFileAsync(process.execPath, [
-          cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
-        ], { encoding: 'utf8' })
-      )
-    );
-    const reclaimParsed = reclaimRace.map((r) => JSON.parse(r.stdout));
-    const abortedWins = reclaimParsed.filter((p) => p.resumed.some((x) => x.gateDecision === 'ABORTED_BEFORE_SEND' && x.wonFinalization === true));
-    assert(abortedWins.length === 1, `Expected exactly 1 ABORTED_BEFORE_SEND winner across 4 competing reclaimers, got ${abortedWins.length}`);
+      const reclaimRace = await reclaimRacePromise;
+      const reclaimParsed = reclaimRace.map((r) => JSON.parse(r.stdout));
+      const abortedWins = reclaimParsed.filter((p) => p.resumed.some((x) => x.gateDecision === 'ABORTED_BEFORE_SEND' && x.wonFinalization === true));
+      assert(abortedWins.length === 1, `Expected exactly 1 ABORTED_BEFORE_SEND winner across 4 competing contenders, got ${abortedWins.length}`);
+      assert(!existsSync(join(root, 'artifacts', 'journal', `${gate.address.toLowerCase()}.lock`)), 'No physical .lock file should exist');
+      assert(!existsSync(join(root, 'artifacts', 'journal', `${gate.address.toLowerCase()}.lock.reclaim`)), 'No physical .lock.reclaim file should exist');
+    } finally {
+      await holder1.killAndWait();
+    }
 
     const { stdout: preJournalOut2 } = await execFileAsync(process.execPath, [
       cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
     ], { encoding: 'utf8' });
     assert(JSON.parse(preJournalOut2).resumedCount === 0, 'Second pre-journal resume must be a no-op');
+
+    // Test D2: Kernel mutex mutual-exclusion stress test under SIGKILL + 6 concurrent workers
+    const counterPath = join(tmpdir(), `b7-lock-counter-${process.pid}-${Date.now()}.txt`);
+    writeFileSync(counterPath, '0');
+    const contenderScript = [
+      'const fs = require("node:fs");',
+      'const { setTimeout: delay } = require("node:timers/promises");',
+      'const { withWalletLock } = require(process.argv[1]);',
+      'const addr = process.argv[2];',
+      'const counterFile = process.argv[3];',
+      'const iters = Number(process.argv[4]);',
+      '(async () => {',
+      '  for (let i = 0; i < iters; i++) {',
+      '    await withWalletLock(addr, async () => {',
+      '      const val = Number(fs.readFileSync(counterFile, "utf8"));',
+      '      await delay(2);',
+      '      fs.writeFileSync(counterFile, String(val + 1));',
+      '    });',
+      '  }',
+      '})().catch((err) => { console.error(err); process.exit(1); });',
+    ].join('\n');
+
+    let holder2 = null;
+    try {
+      holder2 = await spawnLockHolder(gate.address);
+      const contenderPromises = Array.from({ length: 6 }, () =>
+        new Promise((resolveWorker, rejectWorker) => {
+          const p = spawn(process.execPath, ['-e', contenderScript, cliPath, gate.address, counterPath, '10'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let stderr = '';
+          p.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+          p.once('exit', (code, signal) => {
+            if (code === 0) resolveWorker();
+            else rejectWorker(new Error(`Contender exited with code=${code}, signal=${signal}: ${stderr}`));
+          });
+        })
+      );
+      await delay(350);
+      assert(readFileSync(counterPath, 'utf8') === '0', 'No contender may increment counter while holder2 holds kernel lock');
+      await holder2.killAndWait();
+      await Promise.all(contenderPromises);
+      const finalCounter = Number(readFileSync(counterPath, 'utf8'));
+      assert(finalCounter === 60, `Expected final counter 60 (strict mutual exclusion), got ${finalCounter}`);
+    } finally {
+      if (holder2) await holder2.killAndWait();
+      try { unlinkSync(counterPath); } catch {}
+    }
 
     // Test E: Two concurrent `cli.cjs redeem` processes for DIFFERENT scanIds sharing the same gate wallet
     const ownerSigE = await signGateCredential(fanE, CHAIN_ID, contractAddr, editionId, BigInt(slotE), 1n, expiry);
@@ -1147,6 +1249,7 @@ async function benchmark7(port) {
         cliCrashResumePendingVerified: true,
         cliCrashResumeConfirmedGapRaceVerified: true,
         cliCrashResumePreJournalVerified: true,
+        cliKernelLockSigkillContentionVerified: true,
       },
     };
   } finally {

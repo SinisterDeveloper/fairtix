@@ -1,5 +1,7 @@
+const net = require('node:net');
+const { createHash } = require('node:crypto');
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync, statSync } = require('node:fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
@@ -39,9 +41,17 @@ function getJournalPath(address) {
   return join(journalDir, `${address.toLowerCase()}.json`);
 }
 
-function getWalletLockPath(address) {
-  mkdirSync(journalDir, { recursive: true });
-  return join(journalDir, `${address.toLowerCase()}.lock`);
+function getWalletLockEndpoint(address) {
+  const journalPath = getJournalPath(address);
+  const keyInput = process.platform === 'win32' ? journalPath.toLowerCase() : journalPath;
+  const digest = createHash('sha256').update(keyInput).digest('hex').slice(0, 40);
+  if (process.platform === 'win32') {
+    return `\\\\.\\pipe\\fairtickets-wallet-${digest}`;
+  }
+  if (process.platform === 'linux') {
+    return `\0fairtickets-wallet-${digest}`;
+  }
+  throw new Error(`Unsupported platform for kernel-scoped wallet lock: ${process.platform}`);
 }
 
 function isPidAlive(pid) {
@@ -72,54 +82,56 @@ function createExclusiveFileAtomic(destPath, content) {
   }
 }
 
+function tryAcquireKernelLock(endpoint) {
+  return new Promise((resolveLock, rejectLock) => {
+    const server = net.createServer((sock) => sock.destroy());
+    const onError = (err) => {
+      server.removeListener('listening', onListening);
+      if (err && (err.code === 'EADDRINUSE' || (process.platform === 'win32' && err.code === 'EACCES'))) {
+        resolveLock(null);
+      } else {
+        rejectLock(err);
+      }
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      server.on('error', () => {});
+      resolveLock(server);
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen({ path: endpoint, exclusive: true });
+  });
+}
+
+function closeKernelLock(server) {
+  return new Promise((resolveClose) => {
+    try {
+      server.close(() => resolveClose());
+    } catch {
+      resolveClose();
+    }
+  });
+}
+
 async function withWalletLock(address, fn, timeoutMs = 10_000) {
-  const lockPath = getWalletLockPath(address);
-  const reclaimPath = `${lockPath}.reclaim`;
+  const endpoint = getWalletLockEndpoint(address);
   const deadline = Date.now() + timeoutMs;
+  let server = null;
   while (true) {
-    const payload = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
-    if (createExclusiveFileAtomic(lockPath, payload)) {
+    server = await tryAcquireKernelLock(endpoint);
+    if (server) {
       break;
     }
-    // Serialize stale-lock inspection & removal via reclaimPath so two reclaimers
-    // cannot race and delete a newly-acquired live lock. Never reclaim a live PID.
-    if (createExclusiveFileAtomic(reclaimPath, payload)) {
-      try {
-        if (existsSync(lockPath)) {
-          const st = statSync(lockPath);
-          const raw = readFileSync(lockPath, 'utf8');
-          const lockInfo = raw ? JSON.parse(raw) : {};
-          const ageMs = Date.now() - (lockInfo.createdAt || st.mtimeMs);
-          if (lockInfo.pid && !isPidAlive(lockInfo.pid) && ageMs >= 100) {
-            unlinkSync(lockPath);
-            continue;
-          }
-        }
-      } catch {
-        // Ignore transient read/unlink races; loop will retry.
-      } finally {
-        try { unlinkSync(reclaimPath); } catch {}
-      }
-    } else {
-      // If a prior reclaimer itself crashed holding reclaimPath, clean it if its PID is dead.
-      try {
-        const rawR = readFileSync(reclaimPath, 'utf8');
-        const infoR = rawR ? JSON.parse(rawR) : {};
-        if (infoR.pid && !isPidAlive(infoR.pid)) {
-          unlinkSync(reclaimPath);
-        }
-      } catch {}
-    }
-
     if (Date.now() > deadline) {
       throw new Error(`Timed out acquiring wallet lock for ${address}`);
     }
-    await delay(15);
+    await delay(10 + Math.floor(Math.random() * 15));
   }
   try {
     return await fn();
   } finally {
-    try { unlinkSync(lockPath); } catch {}
+    await closeKernelLock(server);
   }
 }
 
@@ -721,7 +733,11 @@ async function main() {
   throw new Error(`Unknown command: ${cmd}`);
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+module.exports = { withWalletLock, getWalletLockEndpoint };
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}
