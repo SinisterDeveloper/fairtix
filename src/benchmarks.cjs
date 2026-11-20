@@ -195,7 +195,7 @@ async function benchmark1(port) {
     await rpc('evm_mine');
     await rpc('evm_mine');
 
-    const drawReceipt = await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 6_000_000n);
+    const drawReceipt = await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 12_000_000n);
     assert(drawReceipt.status === '0x1', 'draw must succeed');
 
     // No draw rerun
@@ -209,8 +209,26 @@ async function benchmark1(port) {
     const uniqueWinners = new Set(onChainWinners.map((a) => a.toLowerCase()));
     assert(onChainWinners.length === 100 && uniqueWinners.size === 100, 'Must have 100 distinct winners');
 
+    // Reconstruct frozen entrants list in mined on-chain order from Entered events
+    const enteredLogs = [];
+    for (const r of enterReceipts) {
+      for (const l of r.logs) {
+        if (l.address.toLowerCase() === contractAddr.toLowerCase()) {
+          try {
+            const parsed = iface.parseLog(l);
+            if (parsed && parsed.name === 'Entered') {
+              enteredLogs.push({ index: Number(parsed.args.index), wallet: parsed.args.wallet });
+            }
+          } catch {}
+        }
+      }
+    }
+    enteredLogs.sort((a, b) => a.index - b.index);
+    const frozenEntrants = enteredLogs.map((e) => e.wallet);
+    assert(frozenEntrants.length === 1000, 'Must have 1000 Entered events');
+
     const expectedWinners = computeExpectedWinners(
-      entrants.map((w) => w.address),
+      frozenEntrants,
       targetHash,
       contractAddr,
       100
@@ -335,7 +353,7 @@ async function benchmark3(port) {
     await rpc('evm_mine');
     await rpc('evm_mine');
     await rpc('evm_mine');
-    await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 6_000_000n);
+    await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 12_000_000n);
 
     // Burst 1,000 concurrent claim() transactions (one from each registered wallet)
     const claimData = iface.encodeFunctionData('claim', []);
@@ -616,7 +634,7 @@ async function benchmark5(port) {
     await sendOne(rpc, rpcBatch, fanD, 2, contractAddr, iface.encodeFunctionData('list', [BigInt(slotC), 2n, FACE_PRICE]));
     await sendOne(rpc, rpcBatch, fanC, 3, contractAddr, iface.encodeFunctionData('buy', [BigInt(slotC), 2n, FACE_PRICE]), FACE_PRICE);
 
-    await advanceTime(rpc, 3700); // enter GATE
+    await advanceTime(rpc, 3550); // enter GATE at t0 + 7250 (within gateExpiry = resaleCutoff + 60)
 
     // Reject A's stale v1 credential, accept B's fresh v2 credential
     const rStaleA = await sendOne(

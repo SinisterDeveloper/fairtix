@@ -1,0 +1,99 @@
+[
+  {
+    "id": 1,
+    "name": "Fair allocation",
+    "severity": "Critical",
+    "pass": true,
+    "durationMs": 4272,
+    "metrics": {
+      "entrants": 1000,
+      "winners": 100,
+      "uniqueWinners": 100,
+      "drawGasUsed": 7383620,
+      "independentDrawVerified": true
+    }
+  },
+  {
+    "id": 2,
+    "name": "Duplicate-entry resistance",
+    "severity": "Critical",
+    "pass": true,
+    "durationMs": 3273,
+    "metrics": {
+      "attempts": 1000,
+      "succeeded": 1,
+      "rejected": 999,
+      "onChainEntrantsCount": 1
+    }
+  },
+  {
+    "id": 3,
+    "name": "No overselling",
+    "severity": "Critical",
+    "pass": true,
+    "durationMs": 5922,
+    "metrics": {
+      "burstRequests": 1000,
+      "committedSales": 100,
+      "rejectedClaims": 900,
+      "winnerRetryAttempts": 1000,
+      "winnerRetrySales": 0,
+      "organiserProceedsWei": "20000000"
+    }
+  },
+  {
+    "id": 4,
+    "name": "Resale price cap",
+    "severity": "Critical",
+    "pass": true,
+    "durationMs": 420,
+    "metrics": {
+      "aboveFaceRejected": true,
+      "aboveLastPaidRejected": true,
+      "mismatchedPriceRejected": true,
+      "twoBuyersOneListingRaceResolved": true,
+      "oneBuyerTwoTicketsRejected": true,
+      "failedPayoutIsolated": true
+    }
+  },
+  {
+    "id": 5,
+    "name": "Credential invalidation",
+    "severity": "High",
+    "pass": true,
+    "durationMs": 357,
+    "metrics": {
+      "aToBStaleRejected": true,
+      "bFreshAdmitted": true,
+      "aToBToAOriginalRejected": true,
+      "aToBToAFreshAdmitted": true,
+      "admittedCount": 2
+    }
+  },
+  {
+    "id": 6,
+    "name": "Forgery rejection",
+    "severity": "High",
+    "pass": true,
+    "durationMs": 249,
+    "metrics": {
+      "forgeriesTested": 6,
+      "allRejected": true,
+      "admittedCount": 0
+    }
+  },
+  {
+    "id": 7,
+    "name": "One-time admission",
+    "severity": "Critical",
+    "pass": true,
+    "durationMs": 376,
+    "metrics": {
+      "concurrentScans": 100,
+      "admitted": 1,
+      "denied": 99,
+      "admittedGas": 84066,
+      "failedGasTotal": 3484197
+    }
+  }
+]

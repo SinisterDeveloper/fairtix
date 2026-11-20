@@ -264,7 +264,7 @@ async function main() {
   if (cmd === 'draw') {
     const wallet = new ethers.Wallet(opts.key);
     const data = iface.encodeFunctionData('draw', []);
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 6_000_000n });
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 12_000_000n });
     console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
