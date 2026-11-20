@@ -1,7 +1,10 @@
+import fs from 'node:fs';
+import nodePath from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { shouldMineBeforeFinalize } from '@/lib/allocation';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
-import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
+import { inrToWei } from '@/lib/format';
+import type { ActivityLogEntry, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export const runtime = 'nodejs';
 type Body = Record<string, unknown>;
@@ -21,6 +24,36 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
     return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
   }
   if (path.join('/') === 'organiser/alerts') return NextResponse.json(await runCli(['alerts']));
+  if (path.join('/') === 'admin/logs') {
+    const stateDir = process.env.FAIRTICKETS_STATE_DIR || nodePath.resolve(process.cwd(), '..', 'artifacts');
+    const logPath = nodePath.join(stateDir, 'activity-log.ndjson');
+    let logs: ActivityLogEntry[] = [];
+    try {
+      if (fs.existsSync(logPath)) {
+        const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+        logs = lines
+          .slice(-100)
+          .reverse()
+          .map((line) => {
+            try {
+              return JSON.parse(line) as ActivityLogEntry;
+            } catch {
+              return { timestamp: '', action: 'parse_error', error: line };
+            }
+          });
+      }
+    } catch {
+      logs = [];
+    }
+    const alertsRes = await runCli(['alerts']);
+    return NextResponse.json({
+      ok: true,
+      logs,
+      alerts: Array.isArray(alertsRes.alerts) ? alertsRes.alerts : [],
+      activityCount: Number(alertsRes.activityCount ?? logs.length),
+      stateDir,
+    });
+  }
   return NextResponse.json({ ok: false, error: 'Unknown API route' }, { status: 404 });
 }
 
@@ -39,6 +72,29 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       return invoke(['lock-draw', '--role', 'organiser', ...json]);
     }
     case 'organiser/advance-time': return invoke(['advance-time', '--seconds', String(num(body.seconds, 301)), ...json]);
+    case 'organiser/create-event': {
+      const capacity = Math.max(1, Math.min(50, Math.floor(num(body.capacity, 2))));
+      const entryWindow = Math.max(30, Math.min(86400, Math.floor(num(body.entryWindowSeconds, 600))));
+      const facePriceInr = Math.max(100, Math.floor(num(body.facePriceInr, 3000)));
+      const facePriceWei = inrToWei(String(facePriceInr), '50000000000000000', 3000);
+      const resetRes = await runCli(['reset-demo'], 30_000);
+      if (resetRes.ok === false && resetRes.txStatus === 'unknown_recovering') {
+        return NextResponse.json(resetRes, { status: 202 });
+      }
+      const initRes = (await runCli(
+        [
+          'init-demo',
+          '--capacity',
+          String(capacity),
+          '--entry-window',
+          String(entryWindow),
+          '--face-price',
+          facePriceWei,
+        ],
+        30_000,
+      )) as ApiMutationResponse;
+      return NextResponse.json(initRes, { status: httpStatus(initRes) });
+    }
     case 'organiser/draw': {
       const status = await runCli(['status']) as Partial<DemoStatusResponse> & { ok?: boolean };
       if (shouldMineBeforeFinalize(status)) {

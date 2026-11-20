@@ -4,7 +4,8 @@ import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { describeAllocation } from '@/lib/allocation';
-import { formatWeiToInr, inrToWei, shortAddress } from '@/lib/format';
+import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
+import { formatWeiToInr, inrToWei } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export default function FanPage() {
@@ -17,6 +18,7 @@ export default function FanPage() {
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [tray, setTray] = useState<Array<Record<string, unknown>>>([]);
   const [enteredByContract, setEnteredByContract] = useState<Record<string, Record<string, { blockNumber?: number | null }>>>({});
+  const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
   const isFan = role === 'fanA' || role === 'fanB';
@@ -36,6 +38,7 @@ export default function FanPage() {
   }
 
   useEffect(() => {
+    setEventMeta(loadEventMeta());
     void refresh();
     const id = setInterval(refresh, 3000);
     try {
@@ -156,9 +159,9 @@ export default function FanPage() {
   }, [role, heldTicket?.slot, heldTicket?.version, activeListings[0]?.slot, activeListings[0]?.version]);
 
   const fanQueueStatus = !status
-    ? 'Loading chain state…'
+    ? 'Loading bookings…'
     : heldTicket
-      ? `Holds slot #${heldTicket.slot} (v${heldTicket.version}${heldTicket.admitted ? ', admitted' : ''})`
+      ? `Confirmed booking · Seat #${heldTicket.slot} (Pass v${heldTicket.version}${heldTicket.admitted ? ', checked in' : ''})`
       : isWinner
         ? 'Reservation available to claim'
         : status.drawn
@@ -166,13 +169,61 @@ export default function FanPage() {
           : status.drawLocked
             ? 'Allocation pending'
             : enteredInfo
-              ? `Entry confirmed${enteredInfo.blockNumber ? ` (mined in block #${enteredInfo.blockNumber})` : ''}`
+              ? 'Entry confirmed'
               : 'Not yet entered';
+
+  const friendlyStage = !status
+    ? 'Connecting'
+    : phase.includes('ENTRY')
+      ? 'Queue Open'
+      : phase.includes('DRAW')
+        ? 'Finalizing Reservations'
+        : phase.includes('CLAIM')
+          ? 'Claim Open'
+          : phase.includes('RESALE')
+            ? 'Resale Open'
+            : phase.includes('GATE')
+              ? 'Doors Open'
+              : 'Event Ended';
 
   return (
     <main className="page">
-      <p className="eyebrow">FAN CONSOLE</p>
-      <h1>Your ticket journey</h1>
+      <p className="eyebrow">USER ZONE · FAN BOOKINGS</p>
+      <h1>Upcoming Events &amp; Bookings</h1>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>{eventMeta.title}</h2>
+            <p className="meta" style={{ margin: 0 }}>
+              {eventMeta.venue} · {eventMeta.dateLabel}
+            </p>
+          </div>
+          {status && <span className="pill ok">{friendlyStage}</span>}
+        </div>
+        {status && (
+          <div className="metrics-grid">
+            <div className="metric">
+              <span>Ticket price</span>
+              <strong>{formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)}</strong>
+            </div>
+            <div className="metric">
+              <span>Total capacity</span>
+              <strong>{status.capacity} tickets</strong>
+            </div>
+            <div className="metric">
+              <span>Queue entries</span>
+              <strong>{status.entrantsCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Booked so far</span>
+              <strong>
+                {status.issuedCount} / {status.capacity}
+              </strong>
+            </div>
+          </div>
+        )}
+      </section>
 
       <LifecycleStepper phase={status?.phase} context="fan" />
 
@@ -182,16 +233,16 @@ export default function FanPage() {
             Acting as{' '}
             <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
           </span>
-          {status && <span className="pill">{status.phase}</span>}
+          {status && <span className="pill">{friendlyStage}</span>}
           {isFan && status && (
             <span className="meta">
               {fanQueueStatus}
-              {' · '}Withdrawable: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
+              {' · '}Wallet credit: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
             </span>
           )}
         </div>
         <button className="secondary" onClick={() => void refresh()}>
-          Refresh chain state
+          Refresh bookings
         </button>
       </div>
 
@@ -522,7 +573,7 @@ export default function FanPage() {
         </article>
       </section>
 
-      <StatePanel status={status} message={message} />
+      <StatePanel status={status} />
     </main>
   );
 }
@@ -530,18 +581,17 @@ export default function FanPage() {
 function resolveRoleLabel(status: DemoStatusResponse, address: string): string {
   const lower = address.toLowerCase();
   const entry = Object.values(status.roles || {}).find((r) => r.address.toLowerCase() === lower);
-  return entry ? `${entry.label} (${shortAddress(address)})` : shortAddress(address);
+  return entry ? entry.label : 'Guest';
 }
 
-function StatePanel({ status, message }: { status: DemoStatusResponse | null; message: unknown }) {
+function StatePanel({ status }: { status: DemoStatusResponse | null }) {
   return (
     <section className="card state">
       <div className="card-head">
-        <h2>On-chain tickets</h2>
+        <h2>Current Bookings</h2>
         {status && (
           <span className="meta">
-            {status.phase} · {status.entrantsCount} entrants · {status.issuedCount}/{status.capacity}{' '}
-            issued · {status.admittedCount} admitted
+            {status.issuedCount}/{status.capacity} booked · {status.admittedCount} checked in
           </span>
         )}
       </div>
@@ -551,21 +601,19 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
           <table>
             <thead>
               <tr>
-                <th>Slot</th>
-                <th>Owner</th>
-                <th>Version</th>
+                <th>Seat / Slot</th>
+                <th>Holder</th>
+                <th>Pass Version</th>
                 <th>Paid Price</th>
-                <th>Listing</th>
-                <th>Admitted</th>
+                <th>Resale Listing</th>
+                <th>Checked In</th>
               </tr>
             </thead>
             <tbody>
               {status.tickets.map((t) => (
                 <tr key={t.slot}>
                   <td>#{t.slot}</td>
-                  <td>
-                    <code title={t.owner}>{resolveRoleLabel(status, t.owner)}</code>
-                  </td>
+                  <td>{resolveRoleLabel(status, t.owner)}</td>
                   <td>v{t.version}</td>
                   <td>{formatWeiToInr(t.paidPriceWei, status.facePriceWei, status.facePriceInr)}</td>
                   <td>
@@ -580,24 +628,8 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
           </table>
         </div>
       ) : (
-        <p>{status ? 'No tickets issued yet.' : 'Loading chain state…'}</p>
+        <p>{status ? 'No bookings confirmed yet.' : 'Loading bookings…'}</p>
       )}
-
-      <details style={{ marginTop: 14 }}>
-        <summary>Raw state &amp; last action JSON</summary>
-        <pre>
-          {JSON.stringify(
-            {
-              contract: status?.contract,
-              codeHash: status?.codeHash,
-              tickets: status?.tickets,
-              lastAction: message,
-            },
-            null,
-            2,
-          )}
-        </pre>
-      </details>
     </section>
   );
 }

@@ -156,8 +156,17 @@ export default function GatePage() {
 
   return (
     <main className="page">
-      <p className="eyebrow">VENUE GATE</p>
-      <h1>Verify a ticket</h1>
+      <div className="card-head">
+        <div>
+          <p className="eyebrow">ZONE 2 · ORGANISER &amp; GATE</p>
+          <h1>Verify a ticket</h1>
+        </div>
+        <div className="actions" style={{ margin: 0 }}>
+          <Link className="button secondary" href="/organiser">
+            ← Back to Organiser
+          </Link>
+        </div>
+      </div>
 
       <LifecycleStepper phase={status?.phase} context="gate" />
 

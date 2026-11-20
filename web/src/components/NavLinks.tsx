@@ -2,22 +2,21 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-const LINKS = [
-  { href: '/attack', label: 'Attack' },
-  { href: '/fan', label: 'Fan' },
-  { href: '/gate', label: 'Gate' },
-  { href: '/organiser', label: 'Organiser' },
+const ZONES = [
+  { href: '/fan', label: 'User (Fan)', match: ['/fan'] },
+  { href: '/organiser', label: 'Organiser / Gate', match: ['/organiser', '/gate'] },
+  { href: '/admin', label: 'Admin', match: ['/admin', '/attack'] },
 ];
 
 export default function NavLinks() {
   const pathname = usePathname();
   return (
-    <nav aria-label="Primary">
-      {LINKS.map((item) => {
-        const active = pathname === item.href;
+    <nav aria-label="Primary zones">
+      {ZONES.map((zone) => {
+        const active = zone.match.includes(pathname);
         return (
-          <Link key={item.href} href={item.href} className={active ? 'nav-active' : undefined}>
-            {item.label}
+          <Link key={zone.href} href={zone.href} className={active ? 'nav-active' : undefined}>
+            {zone.label}
           </Link>
         );
       })}
