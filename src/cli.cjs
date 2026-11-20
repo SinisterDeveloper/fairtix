@@ -142,6 +142,84 @@ function activitySubjectLabel(opts) {
   return String(opts.subject || `demo-${opts.role}`);
 }
 
+function readActivityRecords() {
+  const records = [];
+  if (!existsSync(activityLogPath)) return records;
+  for (const line of readFileSync(activityLogPath, 'utf8').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {}
+  }
+  return records;
+}
+
+function computeAlerts(records = readActivityRecords()) {
+  const alerts = [];
+  const entriesBySubject = new Map();
+  const subjectLabels = new Map();
+  const failedByScan = new Map();
+  for (const row of records) {
+    if (row.action === 'enter' && row.subject) {
+      entriesBySubject.set(row.subject, (entriesBySubject.get(row.subject) || 0) + 1);
+      if (row.subjectLabel) subjectLabels.set(row.subject, row.subjectLabel);
+    }
+    if (row.action === 'redeem' && row.scanId && !row.success) {
+      failedByScan.set(row.scanId, (failedByScan.get(row.scanId) || 0) + 1);
+    }
+  }
+  const timestamp = new Date().toISOString();
+  for (const [subjectOrSlot, count] of entriesBySubject) {
+    if (count >= 3) {
+      const subjectLabel = subjectLabels.get(subjectOrSlot) || null;
+      alerts.push({
+        id: `entry-${subjectOrSlot}`,
+        severity: 'review',
+        rule: 'REPEATED_ENTRY_SUBJECT',
+        grouping: 'subject',
+        count,
+        reason: 'The same demo subject has made repeated entry requests.',
+        subjectOrSlot,
+        ...(subjectLabel ? { subjectLabel } : {}),
+        timestamp,
+        note: 'Review signal only; does not auto-block',
+      });
+    }
+  }
+  for (const [subjectOrSlot, count] of failedByScan) {
+    if (count >= 2) {
+      alerts.push({
+        id: `scan-${subjectOrSlot}`,
+        severity: 'review',
+        rule: 'REPEATED_FAILED_SCAN',
+        grouping: 'scanId',
+        count,
+        reason: 'A scan ID has repeated failed admission attempts.',
+        subjectOrSlot,
+        timestamp,
+        note: 'Review signal only; does not auto-block',
+      });
+    }
+  }
+  const now = Date.now();
+  const recent = records.filter((row) => now - Date.parse(row.timestamp) <= 10_000);
+  if (recent.length >= 5) {
+    alerts.push({
+      id: `burst-${Math.floor(now / 10000)}`,
+      severity: 'review',
+      rule: 'REQUEST_BURST',
+      grouping: 'event',
+      windowSeconds: 10,
+      count: recent.length,
+      reason: 'Five or more requests were recorded within ten seconds.',
+      subjectOrSlot: 'event',
+      timestamp,
+      note: 'Review signal only; does not auto-block',
+    });
+  }
+  return { alerts, activityCount: records.length };
+}
+
 function loadArtifact() {
   if (!existsSync(artifactPath)) {
     throw new Error('Missing artifacts/FairTickets.json. Run `node src/compile.cjs` first.');
@@ -520,6 +598,14 @@ async function main() {
       const wallet = ethers.Wallet.createRandom();
       return [role, { address: wallet.address, privateKey: wallet.privateKey }];
     }));
+    const botWallet = ethers.Wallet.createRandom();
+    const attackParticipants = {
+      repeatedEntrant: {
+        label: 'bot-repeated-entrant',
+        address: botWallet.address,
+        privateKey: botWallet.privateKey,
+      },
+    };
     const facePriceWei = String(opts['face-price'] || '50000000000000000');
     const capacity = Number(opts.capacity || 2);
     const entryWindow = Number(opts['entry-window'] || 120);
@@ -527,7 +613,10 @@ async function main() {
     const resaleWindow = Number(opts['resale-window'] || 300);
     const gateWindow = Number(opts['gate-window'] || 600);
     const funding = '0x' + (10n * 10n ** 18n).toString(16);
-    await Promise.all(Object.values(roles).map((r) => rpc('anvil_setBalance', [r.address, funding])));
+    await Promise.all([
+      ...Object.values(roles).map((r) => rpc('anvil_setBalance', [r.address, funding])),
+      rpc('anvil_setBalance', [attackParticipants.repeatedEntrant.address, funding]),
+    ]);
     const latest = await rpc('eth_getBlockByNumber', ['latest', false]);
     const entryDeadline = BigInt(Number(BigInt(latest.timestamp)) + entryWindow);
     const editionId = ethers.hexlify(ethers.randomBytes(32));
@@ -537,7 +626,7 @@ async function main() {
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet: new ethers.Wallet(roles.organiser.privateKey), to: null, data: tx.data, gasLimit: 4_000_000n, opId: 'demo-deploy' });
     if (receipt.status !== '0x1') throw new Error(`Demo deployment reverted: ${txHash}`);
     const codeHash = ethers.keccak256(await rpc('eth_getCode', [receipt.contractAddress, 'latest']));
-    const fixture = { roles, facePriceWei, capacity, entryWindow, claimWindow, resaleWindow, gateWindow };
+    const fixture = { roles, attackParticipants, facePriceWei, capacity, entryWindow, claimWindow, resaleWindow, gateWindow };
     const state = { contract: receipt.contractAddress, editionId, codeHash, chainId: Number(BigInt(await rpc('eth_chainId'))), rpcUrl };
     writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { flag: 'wx', mode: 0o600 });
     writeFileSync(demoStatePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
@@ -638,7 +727,7 @@ async function main() {
   }
 
   if (!cmd || cmd === 'help') {
-    console.log('Commands: init-demo, reset-demo, deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine, alerts');
+    console.log('Commands: init-demo, reset-demo, deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine, alerts, demo-attack');
     return;
   }
 
@@ -1507,78 +1596,194 @@ async function main() {
   }
 
   if (cmd === 'alerts') {
-    const records = [];
-    if (existsSync(activityLogPath)) {
-      for (const line of readFileSync(activityLogPath, 'utf8').split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        try {
-          records.push(JSON.parse(line));
-        } catch {}
-      }
+    const { alerts, activityCount } = computeAlerts();
+    console.log(JSON.stringify({ ok: true, alerts, activityCount }, null, 2));
+    return;
+  }
+
+  if (cmd === 'demo-attack') {
+    if (!fixture || !demoState) {
+      throw new Error('Demo state is missing. Run init-demo before demo-attack.');
     }
-    const alerts = [];
-    const entriesBySubject = new Map();
-    const subjectLabels = new Map();
-    const failedByScan = new Map();
-    for (const row of records) {
-      if (row.action === 'enter' && row.subject) {
-        entriesBySubject.set(row.subject, (entriesBySubject.get(row.subject) || 0) + 1);
-        if (row.subjectLabel) subjectLabels.set(row.subject, row.subjectLabel);
-      }
-      if (row.action === 'redeem' && row.scanId && !row.success) {
-        failedByScan.set(row.scanId, (failedByScan.get(row.scanId) || 0) + 1);
-      }
+    const scenario = String(opts.scenario || 'repeated-entry');
+    if (scenario !== 'repeated-entry') {
+      throw new Error(`Unsupported demo-attack scenario: ${scenario}`);
     }
-    const timestamp = new Date().toISOString();
-    for (const [subjectOrSlot, count] of entriesBySubject) {
-      if (count >= 3) {
-        const subjectLabel = subjectLabels.get(subjectOrSlot) || null;
-        alerts.push({
-          id: `entry-${subjectOrSlot}`,
-          severity: 'review',
-          rule: 'REPEATED_ENTRY_SUBJECT',
-          grouping: 'subject',
-          count,
-          reason: 'The same demo subject has made repeated entry requests.',
-          subjectOrSlot,
-          ...(subjectLabel ? { subjectLabel } : {}),
-          timestamp,
-          note: 'Review signal only; does not auto-block',
-        });
-      }
+    const attemptsCount = Number(opts.attempts || 3);
+    if (!Number.isInteger(attemptsCount) || attemptsCount < 2 || attemptsCount > 10) {
+      throw new Error(`--attempts must be an integer between 2 and 10 (received ${opts.attempts}).`);
     }
-    for (const [subjectOrSlot, count] of failedByScan) {
-      if (count >= 2) {
-        alerts.push({
-          id: `scan-${subjectOrSlot}`,
-          severity: 'review',
-          rule: 'REPEATED_FAILED_SCAN',
-          grouping: 'scanId',
-          count,
-          reason: 'A scan ID has repeated failed admission attempts.',
-          subjectOrSlot,
-          timestamp,
-          note: 'Review signal only; does not auto-block',
-        });
-      }
+    const controlRole = String(opts['control-role'] || 'fanA');
+    if (!fixture.roles?.[controlRole]) {
+      throw new Error(`Unknown control role: ${controlRole}`);
     }
-    const now = Date.now();
-    const recent = records.filter((row) => now - Date.parse(row.timestamp) <= 10_000);
-    if (recent.length >= 5) {
-      alerts.push({
-        id: `burst-${Math.floor(now / 10000)}`,
-        severity: 'review',
-        rule: 'REQUEST_BURST',
-        grouping: 'event',
-        windowSeconds: 10,
-        count: recent.length,
-        reason: 'Five or more requests were recorded within ten seconds.',
-        subjectOrSlot: 'event',
-        timestamp,
-        note: 'Review signal only; does not auto-block',
+    if (!fixture.attackParticipants?.repeatedEntrant) {
+      const botWallet = ethers.Wallet.createRandom();
+      const funding = '0x' + (10n * 10n ** 18n).toString(16);
+      await rpc('anvil_setBalance', [botWallet.address, funding]);
+      fixture.attackParticipants = {
+        ...(fixture.attackParticipants || {}),
+        repeatedEntrant: {
+          label: 'bot-repeated-entrant',
+          address: botWallet.address,
+          privateKey: botWallet.privateKey,
+        },
+      };
+      writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { mode: 0o600 });
+    }
+
+    const contractAddress = resolveContract(opts);
+    const editionId = resolveEditionId(opts);
+    const chainId = Number(BigInt(await rpc('eth_chainId')));
+    const provider = makeProvider(rpcUrl, chainId);
+    const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+
+    const readCounts = async () => {
+      const [phase, capacity, entrantsCount, winnersCount, issuedCount, admittedCount] = await Promise.all([
+        c.phase(),
+        c.capacity(),
+        c.entrantsCount(),
+        c.winnersCount(),
+        c.issuedCount(),
+        c.admittedCount(),
+      ]);
+      return {
+        phase,
+        capacity: Number(capacity),
+        entrantsCount: Number(entrantsCount),
+        winnersCount: Number(winnersCount),
+        issuedCount: Number(issuedCount),
+        admittedCount: Number(admittedCount),
+      };
+    };
+
+    const before = await readCounts();
+    if (before.phase !== 'ENTRY') {
+      throw new Error(`Cannot run ${scenario} in ${before.phase} phase (Entry closed).`);
+    }
+
+    const attester = new ethers.Wallet(fixture.roles.attester.privateKey);
+    const botInfo = fixture.attackParticipants.repeatedEntrant;
+    const botWallet = new ethers.Wallet(botInfo.privateKey);
+    const botSubjectLabel = String(opts.subject || botInfo.label || 'bot-repeated-entrant');
+    const botSubject = botSubjectLabel.startsWith('0x') && botSubjectLabel.length === 66
+      ? botSubjectLabel
+      : ethers.id(botSubjectLabel);
+
+    const controlWallet = new ethers.Wallet(fixture.roles[controlRole].privateKey);
+    const controlSubjectLabel = String(opts['control-subject'] || `demo-${controlRole}`);
+    const controlSubject = controlSubjectLabel.startsWith('0x') && controlSubjectLabel.length === 66
+      ? controlSubjectLabel
+      : ethers.id(controlSubjectLabel);
+
+    const runId = `attack-${Date.now()}`;
+    const attempts = [];
+
+    const submitEntryAttempt = async ({ wallet, roleLabel, participantLabel, subject, subjectLabel, attemptIndex, kind }) => {
+      const attemptId = `${runId}-${kind}-${attemptIndex}`;
+      const block = await rpc('eth_getBlockByNumber', ['latest', false]);
+      const expiry = BigInt(Number(BigInt(block.timestamp)) + 300);
+      const attestation = await signAttestation(attester, chainId, contractAddress, editionId, subject, wallet.address, expiry);
+      const data = iface.encodeFunctionData('enter', [subject, expiry, attestation]);
+      const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 300_000n });
+      const allowed = receipt.status === '0x1';
+      const reason = allowed ? null : (receipt.revertReason || 'Entry rejected by contract.');
+      const errorCode = allowed ? null : classifyErrorCode(reason, 'enter');
+      logActivity({
+        action: 'enter',
+        role: roleLabel,
+        subject,
+        subjectLabel,
+        success: allowed,
+        txHash,
+        ...(reason ? { error: reason } : {}),
+      });
+      attempts.push({
+        attemptId,
+        runId,
+        kind,
+        participantLabel,
+        role: roleLabel,
+        subject,
+        subjectLabel,
+        decision: allowed ? 'ALLOWED' : 'REJECTED',
+        txStatus: allowed ? 'confirmed' : 'rejected',
+        txHash,
+        blockNumber: Number(BigInt(receipt.blockNumber)),
+        reason,
+        errorCode,
+      });
+    };
+
+    for (let i = 1; i <= attemptsCount; i++) {
+      await submitEntryAttempt({
+        wallet: botWallet,
+        roleLabel: botInfo.label || 'bot-repeated-entrant',
+        participantLabel: botInfo.label || 'bot-repeated-entrant',
+        subject: botSubject,
+        subjectLabel: botSubjectLabel,
+        attemptIndex: i,
+        kind: 'repeated-entry',
       });
     }
-    console.log(JSON.stringify({ ok: true, alerts, activityCount: records.length }, null, 2));
+
+    await submitEntryAttempt({
+      wallet: controlWallet,
+      roleLabel: controlRole,
+      participantLabel: `Legitimate Control (${controlRole})`,
+      subject: controlSubject,
+      subjectLabel: controlSubjectLabel,
+      attemptIndex: 1,
+      kind: 'legitimate-control',
+    });
+
+    const [afterCounts, controlEligible, botEligible, alertSummary] = await Promise.all([
+      readCounts(),
+      c.walletEntered(controlWallet.address),
+      c.walletEntered(botWallet.address),
+      Promise.resolve(computeAlerts()),
+    ]);
+
+    const relatedAlerts = alertSummary.alerts.filter(
+      (a) =>
+        (a.rule === 'REPEATED_ENTRY_SUBJECT' && a.subjectOrSlot === botSubject) ||
+        a.rule === 'REQUEST_BURST'
+    );
+    const reviewAlertTriggered = relatedAlerts.some((a) => a.rule === 'REPEATED_ENTRY_SUBJECT');
+    const repeatedAttempts = attempts.filter((a) => a.kind === 'repeated-entry');
+    const repeatedAllowed = repeatedAttempts.filter((a) => a.decision === 'ALLOWED').length;
+    const repeatedRejected = repeatedAttempts.filter((a) => a.decision === 'REJECTED').length;
+    const controlAttempt = attempts.find((a) => a.kind === 'legitimate-control');
+    const extraEntriesAdded = Math.max(0, repeatedAllowed - 1);
+
+    for (const a of attempts) {
+      a.reviewSignalTriggered = a.kind === 'repeated-entry' ? reviewAlertTriggered : false;
+    }
+
+    console.log(JSON.stringify({
+      ok: true,
+      txStatus: 'confirmed',
+      runId,
+      scenario,
+      before,
+      after: {
+        ...afterCounts,
+        extraEntriesAdded,
+        botEligible: Boolean(botEligible),
+        controlEligible: Boolean(controlEligible),
+      },
+      attempts,
+      relatedAlerts,
+      summary: {
+        repeatedAttempts: repeatedAttempts.length,
+        repeatedAllowed,
+        repeatedRejected,
+        controlAllowed: controlAttempt?.decision === 'ALLOWED',
+        controlEligible: Boolean(controlEligible),
+        extraEntriesAdded,
+        reviewAlertTriggered,
+      },
+    }, null, 2));
     return;
   }
 
