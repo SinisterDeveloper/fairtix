@@ -33,6 +33,12 @@ function classifyErrorCode(message, command) {
   return 'INTERNAL_ERROR';
 }
 
+function activitySubject(opts) {
+  if (!opts.subject && !opts.role) return null;
+  const subject = String(opts.subject || `demo-${opts.role}`);
+  return subject.startsWith('0x') && subject.length === 66 ? subject : ethers.id(subject);
+}
+
 function loadArtifact() {
   if (!existsSync(artifactPath)) {
     throw new Error('Missing artifacts/FairTickets.json. Run `node src/compile.cjs` first.');
@@ -402,7 +408,7 @@ async function main() {
               value.error = value.reason || 'The contract rejected this transaction.';
               value.reason = value.error;
             }
-            if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(cmd)) logActivity({ action: cmd, role: opts.role || null, subject: cmd === 'enter' ? (opts.subject || (opts.role ? `demo-${opts.role}` : null)) : null,
+            if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(cmd)) logActivity({ action: cmd, role: opts.role || null, subject: cmd === 'enter' ? activitySubject(opts) : null,
               scanId: value.scanId || opts['scan-id'] || null, success: value.txStatus !== 'rejected' && value.status !== '0x0' && value.decision !== 'REJECT', txHash: value.txHash || null });
             return log(jsonMode ? JSON.stringify(value, null, 2) : args[0]);
           }
@@ -929,7 +935,7 @@ module.exports = { withWalletLock, getWalletLockEndpoint };
 if (require.main === module) {
   main().catch((err) => {
     const parsed = parseArgs(process.argv.slice(2));
-    try { if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(parsed.cmd)) logActivity({ action: parsed.cmd, role: parsed.opts.role || null, subject: parsed.cmd === 'enter' ? (parsed.opts.subject || null) : null,
+    try { if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(parsed.cmd)) logActivity({ action: parsed.cmd, role: parsed.opts.role || null, subject: parsed.cmd === 'enter' ? activitySubject(parsed.opts) : null,
       scanId: parsed.opts['scan-id'] || null, success: false, error: err.message || String(err) }); } catch {}
     if (parsed.opts.json) {
       const message = err.message || String(err);
