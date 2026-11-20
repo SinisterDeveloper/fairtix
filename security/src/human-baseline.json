@@ -1,0 +1,29 @@
+{
+  "source": "default_cold_start_until_kaggle_or_live_traces_loaded",
+  "sampleCount": 50,
+  "means": {
+    "queueToReserveMs": 2400,
+    "reserveToCheckoutMs": 2600,
+    "interEventMeanMs": 2000,
+    "interEventCv": 0.38,
+    "eventsPerMinute": 28,
+    "abandonmentRatio": 0.03
+  },
+  "m2": {
+    "queueToReserveMs": 40500000,
+    "reserveToCheckoutMs": 50000000,
+    "interEventMeanMs": 24500000,
+    "interEventCv": 0.72,
+    "eventsPerMinute": 9800,
+    "abandonmentRatio": 0.32
+  },
+  "stds": {
+    "queueToReserveMs": 900,
+    "reserveToCheckoutMs": 1000,
+    "interEventMeanMs": 700,
+    "interEventCv": 0.12,
+    "eventsPerMinute": 14,
+    "abandonmentRatio": 0.08
+  },
+  "updatedAt": "2026-11-21T00:00:00.000Z"
+}

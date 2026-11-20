@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { RuleSignal } from './decisions.ts';
 import type { BehavioralFeatureVector } from './ml-features.ts';
+
+const DEFAULT_SHIPPED_BASELINE_PATH = join(dirname(fileURLToPath(import.meta.url)), 'human-baseline.json');
 
 export const UNSUPERVISED_BEHAVIORAL_FEATURES = [
   'queueToReserveMs',
@@ -119,7 +122,14 @@ export class UnsupervisedBaselineDetector {
       try {
         return JSON.parse(readFileSync(this.baselinePath, 'utf8')) as BaselineStatsSnapshot;
       } catch {
-        // Fall back to default if corrupted
+        // Fall back to shipped baseline if corrupted
+      }
+    }
+    if (existsSync(DEFAULT_SHIPPED_BASELINE_PATH)) {
+      try {
+        return JSON.parse(readFileSync(DEFAULT_SHIPPED_BASELINE_PATH, 'utf8')) as BaselineStatsSnapshot;
+      } catch {
+        // Fall back to hardcoded default
       }
     }
     return structuredClone(DEFAULT_HUMAN_BASELINE);

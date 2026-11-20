@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { ingestIliouLogsAndTrain, ingestKaggleClickstreamBaseline } from '../ml/ingest-datasets.ts';
 import { runAccountFarmScenario } from '../simulator/account-farm.ts';
 import { runIbmBenchmarkSuite } from '../simulator/benchmark-ibm.ts';
 import { runDistributedBotsScenario } from '../simulator/distributed-bots.ts';
@@ -575,4 +576,46 @@ test('Unsupervised human-baseline anomaly detector and live-trace auto-learning 
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test('Dataset ingestion (Iliou HTTP logs + Kaggle clickstream) and Colab /train notebooks are valid', () => {
+  const iliouCsv = [
+    'session_id,timestamp,label',
+    'h1,1763690000,human',
+    'h1,1763690003,human',
+    'h1,1763690007,human',
+    'h2,1763690100,human',
+    'h2,1763690102,human',
+    'h2,1763690105,human',
+    'b1,1763690200,advanced_bot',
+    'b1,1763690200.15,advanced_bot',
+    'b1,1763690200.30,advanced_bot',
+    'b2,1763690300,moderate_bot',
+    'b2,1763690300.20,moderate_bot',
+    'b2,1763690300.40,moderate_bot',
+  ].join('\n');
+
+  const iliouRes = ingestIliouLogsAndTrain(iliouCsv);
+  assert.equal(iliouRes.humanSessions, 2);
+  assert.equal(iliouRes.botSessions, 2);
+  assert.equal(iliouRes.model.featureNames.length, 11);
+
+  const kaggleCsv = [
+    'event_time,event_type,user_session',
+    '2026-11-01 10:00:00 UTC,view,ks_1',
+    '2026-11-01 10:00:02 UTC,cart,ks_1',
+    '2026-11-01 10:00:05 UTC,purchase,ks_1',
+    '2026-11-01 10:01:00 UTC,view,ks_2',
+    '2026-11-01 10:01:04 UTC,cart,ks_2',
+  ].join('\n');
+
+  const kaggleRes = ingestKaggleClickstreamBaseline(kaggleCsv);
+  assert.equal(kaggleRes.sessionsParsed, 2);
+  assert.ok(kaggleRes.baseline.means.queueToReserveMs >= 2000);
+  assert.ok(kaggleRes.baseline.means.abandonmentRatio > 0);
+
+  const nb1 = JSON.parse(readFileSync(resolve('train/01_iliou_web_bot_detection.ipynb'), 'utf8'));
+  const nb2 = JSON.parse(readFileSync(resolve('train/02_kaggle_ecommerce_funnel_baseline.ipynb'), 'utf8'));
+  assert.equal(nb1.nbformat, 4);
+  assert.equal(nb2.nbformat, 4);
 });
