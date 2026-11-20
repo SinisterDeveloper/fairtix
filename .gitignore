@@ -1,0 +1,4 @@
+node_modules/
+artifacts/journal/
+artifacts/gate-journal.json
+*.log
