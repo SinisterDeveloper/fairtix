@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import TxStatusBanner from '@/components/TxStatusBanner';
-import { formatWeiToEth, shortAddress } from '@/lib/format';
+import { formatWeiToInr, inrToWei, shortAddress } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export default function FanPage() {
@@ -10,7 +10,7 @@ export default function FanPage() {
   const [subject, setSubject] = useState('fan-a-subject');
   const [slot, setSlot] = useState('1');
   const [version, setVersion] = useState('1');
-  const [price, setPrice] = useState('180000');
+  const [price, setPrice] = useState('2400');
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [tray, setTray] = useState<Array<Record<string, unknown>>>([]);
   const [statusError, setStatusError] = useState('');
@@ -122,7 +122,7 @@ export default function FanPage() {
                 : isWinner
                   ? 'Selected in draw (unclaimed)'
                   : 'No ticket held'}
-              {' · '}Withdrawable: {formatWeiToEth(activeAccount?.withdrawableWei)}
+              {' · '}Withdrawable: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
             </span>
           )}
         </div>
@@ -175,7 +175,7 @@ export default function FanPage() {
             <input value={version} onChange={(e) => setVersion(e.target.value)} />
           </label>
           <label>
-            Price in wei
+            Resale price (INR)
             <input value={price} onChange={(e) => setPrice(e.target.value)} />
           </label>
           <div className="actions">
@@ -185,23 +185,22 @@ export default function FanPage() {
             <button
               disabled={!isFan || busy}
               className="secondary"
-              onClick={() => void act('list', { slot: Number(slot), version: Number(version), priceWei: price })}
+              onClick={() => void act('list', { slot: Number(slot), version: Number(version), priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr) })}
             >
               List for resale
             </button>
             <button
               disabled={!isFan || busy}
               className="secondary"
-              onClick={() => void act('buy', { slot: Number(slot), version: Number(version), priceWei: price })}
+              onClick={() => void act('buy', { slot: Number(slot), version: Number(version), priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr) })}
             >
               Buy listing
             </button>
           </div>
           <p>
             Max resale price:{' '}
-            <strong>{status ? formatWeiToEth(status.maxResalePriceWei) : '—'}</strong> (
-            {status?.maxResalePriceWei ?? '—'} wei). Try a higher value to see the contract enforce
-            the cap.
+            <strong>{status ? formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr) : '—'}</strong>.
+            Try a higher INR amount (for example 30000) to see the cap enforced.
           </p>
         </article>
 
@@ -278,8 +277,8 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
                     <code title={t.owner}>{resolveRoleLabel(status, t.owner)}</code>
                   </td>
                   <td>v{t.version}</td>
-                  <td>{formatWeiToEth(t.paidPriceWei)}</td>
-                  <td>{t.listed ? `${formatWeiToEth(t.resalePriceWei)} (${t.resalePriceWei} wei)` : 'Not listed'}</td>
+                  <td>{formatWeiToInr(t.paidPriceWei, status.facePriceWei, status.facePriceInr)}</td>
+                  <td>{t.listed ? formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr) : 'Not listed'}</td>
                   <td>{t.admitted ? 'Yes' : 'No'}</td>
                 </tr>
               ))}
