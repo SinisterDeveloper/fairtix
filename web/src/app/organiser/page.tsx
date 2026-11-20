@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
+import { describeAllocation } from '@/lib/allocation';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
 import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
@@ -71,6 +72,7 @@ export default function OrganiserPage() {
   })();
   const reconciled = status ? contractBalanceWei === totalCreditsWei : false;
   const alerts = Array.isArray(alertsData?.alerts) ? alertsData.alerts : [];
+  const allocationInfo = describeAllocation(status);
 
   return (
     <main className="page">
@@ -89,18 +91,20 @@ export default function OrganiserPage() {
         <div className="step-actions">
           <div className="step-action">
             <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
-              Close entry and lock draw
+              Close entry and lock allocation
             </button>
             <small className="meta">
-              1. Advances past entry deadline and locks a future block hash for randomness.
+              1. Advances past entry deadline and locks queue allocation (and a future target block if
+              an oversubscribed batch needs a lottery).
             </small>
           </div>
           <div className="step-action">
             <button disabled={busy} onClick={() => void act('organiser/draw')}>
-              Run draw
+              Finalize reservations
             </button>
             <small className="meta">
-              2. Mines 2 blocks and selects winners fairly from unique entrants.
+              2. Finalizes reservations (mines 2 blocks first only when a lottery is required or for
+              legacy editions).
             </small>
           </div>
           <div className="step-action">
@@ -150,7 +154,7 @@ export default function OrganiserPage() {
               <strong>{status.entrantsCount}</strong>
             </div>
             <div className="metric">
-              <span>Winners</span>
+              <span>Reserved / Winners</span>
               <strong>{status.winnersCount}</strong>
             </div>
             <div className="metric">
@@ -178,10 +182,41 @@ export default function OrganiserPage() {
           <p>Loading chain state…</p>
         )}
         {status && (
-          <p className="meta-row">
-            Claim deadline: {formatUnixTime(status.claimDeadline)} · Resale cutoff:{' '}
-            {formatUnixTime(status.resaleCutoff)} · Gate close: {formatUnixTime(status.gateClose)}
-          </p>
+          <>
+            <p className="meta-row">
+              {allocationInfo.mode === 'legacy' ? (
+                <>
+                  <strong>Allocation mode:</strong> Legacy / unknown (allocation metadata absent).
+                </>
+              ) : allocationInfo.state === 'pending_lock' ? (
+                <>
+                  <strong>Queue-first allocation:</strong> Earlier blocks get priority; only a batch
+                  of entries mined in the same block that exceeds remaining capacity is randomized.
+                  Lock allocation after entry closes to check whether a lottery is required.
+                </>
+              ) : allocationInfo.state === 'lottery_required' ? (
+                <>
+                  <strong>Lottery required (block #{allocationInfo.lotteryTargetBlock}):</strong>{' '}
+                  {allocationInfo.lotteryApplicants} eligible{' '}
+                  {allocationInfo.lotteryApplicants === 1 ? 'fan' : 'fans'} in the oversubscribed
+                  batch competing for {allocationInfo.lotterySlots} remaining{' '}
+                  {allocationInfo.lotterySlots === 1 ? 'slot' : 'slots'}. Earlier batches fit in
+                  queue order.
+                </>
+              ) : (
+                <>
+                  <strong>No lottery needed:</strong>{' '}
+                  {status.drawn
+                    ? 'Reservations were finalized in queue order.'
+                    : 'Reservations will be finalized in queue order.'}
+                </>
+              )}
+            </p>
+            <p className="meta-row">
+              Claim deadline: {formatUnixTime(status.claimDeadline)} · Resale cutoff:{' '}
+              {formatUnixTime(status.resaleCutoff)} · Gate close: {formatUnixTime(status.gateClose)}
+            </p>
+          </>
         )}
       </section>
 
@@ -227,7 +262,14 @@ export default function OrganiserPage() {
         </article>
 
         <article className="card">
-          <h2>100k volume evidence</h2>
+          <div className="card-head">
+            <h2>100k volume evidence</h2>
+            <span className="pill warn">Historical · pre-queue-first</span>
+          </div>
+          <p className="meta">
+            Historical throughput benchmark recorded prior to the queue-by-entry-block allocation
+            policy change.
+          </p>
           {status?.volumeEvidence ? (
             <dl className="kv-list">
               <div>

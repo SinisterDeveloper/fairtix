@@ -3,8 +3,8 @@
 type ContextPage = 'fan' | 'gate' | 'organiser';
 
 const STEPS = [
-  { key: 'ENTRY', label: '1. Enter Draw', sub: 'Fans register once' },
-  { key: 'DRAW', label: '2. Fair Draw', sub: 'Organiser picks winners' },
+  { key: 'ENTRY', label: '1. Join Queue', sub: 'Fans enter once' },
+  { key: 'DRAW', label: '2. Finalize', sub: 'Queue / batch lottery' },
   { key: 'CLAIM', label: '3. Claim Ticket', sub: 'Buy at face price' },
   { key: 'RESALE', label: '4. Capped Resale', sub: 'Optional <= cap trade' },
   { key: 'GATE', label: '5. Venue Gate', sub: 'One-time check-in' },
@@ -26,18 +26,18 @@ function nextActionHint(phase: string | undefined, context: ContextPage): string
   const idx = stepIndex(phase);
   if (idx === -1) return 'Connecting to local Anvil chain…';
   if (idx === 0) {
-    if (context === 'fan') return 'Entry is open. Switch between Fan A and Fan B in the top bar and click "Enter event" for each fan.';
-    if (context === 'organiser') return 'Entry is open. Once fans have registered, click "Close entry and lock draw" below.';
-    return 'Entry is still open. Fans must register, draw, claim, and reach the Gate phase before scanning.';
+    if (context === 'fan') return 'Entry is open. Switch between Fan A and Fan B in the top bar and click "Enter event" to join the ticket queue.';
+    if (context === 'organiser') return 'Entry is open. Once fans have joined the queue, click "Close entry and lock allocation" below.';
+    return 'Entry is still open. Fans must join the queue, finalize reservations, claim, and reach the Gate phase before scanning.';
   }
   if (idx === 1) {
-    if (context === 'organiser') return 'Draw is ready. Click "Close entry and lock draw" (if not locked), then click "Run draw" to select winners.';
-    return 'Entry is closed and the draw is running. Go to the Organiser tab to run the draw.';
+    if (context === 'organiser') return 'Allocation is ready. Click "Close entry and lock allocation" (if not locked), then click "Finalize reservations".';
+    return 'Entry is closed and allocation is pending. Go to the Organiser tab to finalize reservations.';
   }
   if (idx === 2) {
-    if (context === 'fan') return 'Winners are selected! Switch to the winning fan role and click "Claim reserved ticket" to buy at face price.';
-    if (context === 'organiser') return 'Claim window is open. Winning fans can now claim their reserved tickets on the Fan tab.';
-    return 'Claim window is open. Winning fans must claim their ticket before the Gate opens.';
+    if (context === 'fan') return 'Reservations are finalized! Switch to a reserved fan role and click "Claim reserved ticket" to buy at face price.';
+    if (context === 'organiser') return 'Claim window is open. Reserved fans can now claim their tickets on the Fan tab.';
+    return 'Claim window is open. Reserved fans must claim their ticket before the Gate opens.';
   }
   if (idx === 3) {
     if (context === 'fan') return 'Resale window is open. The ticket holder can list at or below the cap, and the other fan can buy it.';

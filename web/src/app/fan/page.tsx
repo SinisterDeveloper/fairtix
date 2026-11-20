@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
+import { describeAllocation } from '@/lib/allocation';
 import { formatWeiToInr, inrToWei, shortAddress } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
@@ -15,6 +16,7 @@ export default function FanPage() {
   const [price, setPrice] = useState('2400');
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [tray, setTray] = useState<Array<Record<string, unknown>>>([]);
+  const [enteredByContract, setEnteredByContract] = useState<Record<string, Record<string, { blockNumber?: number | null }>>>({});
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
   const isFan = role === 'fanA' || role === 'fanB';
@@ -65,7 +67,18 @@ export default function FanPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ role, ...body }),
       });
-      setMessage(await r.json());
+      const data = (await r.json()) as ApiMutationResponse;
+      setMessage(data);
+      if (endpoint === 'enter' && data.txStatus === 'confirmed' && status?.contract) {
+        const contractKey = status.contract.toLowerCase();
+        setEnteredByContract((prev) => ({
+          ...prev,
+          [contractKey]: {
+            ...(prev[contractKey] || {}),
+            [role]: { blockNumber: data.blockNumber ?? null },
+          },
+        }));
+      }
       await refresh();
     } finally {
       setBusy(false);
@@ -113,6 +126,22 @@ export default function FanPage() {
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
   const activeListings = status?.tickets?.filter((t) => t.listed) || [];
   const phase = status?.phase?.toUpperCase() || '';
+  const allocationInfo = describeAllocation(status);
+  const enteredInfo = status?.contract ? enteredByContract[status.contract.toLowerCase()]?.[role] : undefined;
+
+  const fanQueueStatus = !status
+    ? 'Loading chain state…'
+    : heldTicket
+      ? `Holds slot #${heldTicket.slot} (v${heldTicket.version}${heldTicket.admitted ? ', admitted' : ''})`
+      : isWinner
+        ? 'Reservation available to claim'
+        : status.drawn
+          ? 'No reservation after finalization'
+          : status.drawLocked
+            ? 'Allocation pending'
+            : enteredInfo
+              ? `Entry confirmed${enteredInfo.blockNumber ? ` (mined in block #${enteredInfo.blockNumber})` : ''}`
+              : 'Not yet entered';
 
   return (
     <main className="page">
@@ -130,11 +159,7 @@ export default function FanPage() {
           {status && <span className="pill">{status.phase}</span>}
           {isFan && status && (
             <span className="meta">
-              {heldTicket
-                ? `Holds slot #${heldTicket.slot} (v${heldTicket.version}${heldTicket.admitted ? ', admitted' : ''})`
-                : isWinner
-                  ? 'Selected in draw — ready to claim'
-                  : 'No ticket held'}
+              {fanQueueStatus}
               {' · '}Withdrawable: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
             </span>
           )}
@@ -164,13 +189,29 @@ export default function FanPage() {
       <section className="grid">
         <article className={`card ${phase.includes('ENTRY') ? 'card-active' : ''}`}>
           <div className="card-head">
-            <h2>1. Register for the draw</h2>
+            <h2>1. Join the ticket queue</h2>
             {phase.includes('ENTRY') && <span className="pill ok">Active phase</span>}
           </div>
           <p>
-            Each verified person gets <strong>one draw entry</strong>. Re-submitting the same
-            subject or wallet is rejected on-chain.
+            {allocationInfo.mode === 'queue_by_entry_block' ? (
+              <>
+                Each verified person gets <strong>one queue entry</strong>. Earlier blocks get
+                priority; only a batch of entries mined in the same block that exceeds remaining
+                capacity enters a lottery. Re-submitting the same subject or wallet is rejected
+                on-chain.
+              </>
+            ) : (
+              <>
+                Each verified person gets <strong>one entry</strong>. Re-submitting the same subject
+                or wallet is rejected on-chain.
+              </>
+            )}
           </p>
+          {isFan && status && (
+            <p className="meta">
+              Queue status: <strong>{fanQueueStatus}</strong>
+            </p>
+          )}
           <label>
             Demo subject
             <input value={subject} onChange={(e) => setSubject(e.target.value)} />
@@ -188,10 +229,21 @@ export default function FanPage() {
             )}
           </div>
           <p>
-            Winners claim at face price (
+            Reserved fans claim at face price (
             {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
             ). During resale, holders can list at or below the on-chain cap.
           </p>
+          {isFan && status && !heldTicket && (
+            <p className="meta">
+              {isWinner
+                ? 'Reservation available to claim — click "Claim reserved ticket" below.'
+                : status.drawn
+                  ? 'No reservation after finalization for this wallet.'
+                  : status.drawLocked
+                    ? 'Allocation pending — waiting for the organiser to finalize reservations.'
+                    : 'Reservations are finalized after entry closes.'}
+            </p>
+          )}
 
           {activeListings.length > 0 && (
             <div className="listing-box">

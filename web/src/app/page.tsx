@@ -25,8 +25,10 @@ export default function Home() {
         <p className="eyebrow">FAIRTICKETS · LOCAL BLOCKCHAIN DEMO</p>
         <h1>Fair access. Tickets that cannot be scalped or faked.</h1>
         <p className="hero-lead">
-          Every entry, lottery draw, price-capped resale, and venue admission is enforced directly by
-          an immutable smart contract on the local Anvil chain—never a mutable database.
+          Every queue entry, block-priority allocation, price-capped resale, and venue admission is
+          enforced directly by an immutable smart contract on the local Anvil chain—never a mutable
+          database. Earlier blocks get priority, and only a batch of entries mined in the same block
+          that exceeds remaining capacity is randomized.
         </p>
       </section>
 
@@ -78,7 +80,7 @@ export default function Home() {
           <p className="eyebrow">1 · FOR FANS</p>
           <h2>Fan Portal</h2>
           <p>
-            Register for the lottery as Fan A or Fan B, claim a winning ticket at face price, list or
+            Join the ticket queue as Fan A or Fan B, claim a reserved ticket at face price, list or
             buy on capped resale, and sign a short-lived gate pass.
           </p>
           <div className="actions">
@@ -92,8 +94,8 @@ export default function Home() {
           <p className="eyebrow">2 · FOR ORGANISERS</p>
           <h2>Organiser Console</h2>
           <p>
-            Advance the event through draw and claim phases, inspect contract hashes and reconciled
-            balances, and monitor review-only suspicious activity alerts.
+            Close entry and lock allocation, finalize reservations, inspect contract hashes and
+            reconciled balances, and monitor review-only suspicious activity alerts.
           </p>
           <div className="actions">
             <Link className="button secondary" href="/organiser">
@@ -121,14 +123,16 @@ export default function Home() {
         <h2>How the end-to-end journey works</h2>
         <ol className="guide-list">
           <li>
-            <strong>Enter the draw (Fan):</strong> On <Link href="/fan">/fan</Link>, register as{' '}
-            <em>Fan A</em>, then switch to <em>Fan B</em> in the top-right selector and register.
-            Duplicate entries are rejected on-chain.
+            <strong>Join the ticket queue (Fan):</strong> On <Link href="/fan">/fan</Link>, enter as{' '}
+            <em>Fan A</em>, then switch to <em>Fan B</em> in the top-right selector and enter.
+            Earlier blocks get priority; if a batch of entries mined in the same block exceeds
+            remaining capacity, only that batch is randomized. Duplicate entries are rejected
+            on-chain.
           </li>
           <li>
-            <strong>Lock &amp; run the draw (Organiser):</strong> On{' '}
-            <Link href="/organiser">/organiser</Link>, close entry &amp; lock the draw, then run the
-            draw to select winners.
+            <strong>Lock &amp; finalize reservations (Organiser):</strong> On{' '}
+            <Link href="/organiser">/organiser</Link>, close entry and lock allocation, then
+            finalize reservations (in queue order, or via batch lottery when oversubscribed).
           </li>
           <li>
             <strong>Claim &amp; test capped resale (Fan):</strong> On <Link href="/fan">/fan</Link>,

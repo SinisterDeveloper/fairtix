@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { shouldMineBeforeFinalize } from '@/lib/allocation';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
-import type { ApiMutationResponse, RoleId } from '@/lib/types';
+import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export const runtime = 'nodejs';
 type Body = Record<string, unknown>;
@@ -39,8 +40,11 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
     }
     case 'organiser/advance-time': return invoke(['advance-time', '--seconds', String(num(body.seconds, 301)), ...json]);
     case 'organiser/draw': {
-      const mined = await runCli(['mine', '--blocks', '2']);
-      if (mined.txStatus === 'unknown_recovering') return NextResponse.json(mined, { status: 202 });
+      const status = await runCli(['status']) as Partial<DemoStatusResponse> & { ok?: boolean };
+      if (shouldMineBeforeFinalize(status)) {
+        const mined = await runCli(['mine', '--blocks', '2']);
+        if (mined.txStatus === 'unknown_recovering') return NextResponse.json(mined, { status: 202 });
+      }
       return invoke(['draw', '--role', 'organiser', ...json]);
     }
     case 'claim': return invoke(['claim', ...roleFlags, ...json]);
