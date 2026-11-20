@@ -1,10 +1,52 @@
-# FairTickets Technical Process Guide (ASD-STE100)
+# FairTickets Mentor Review Guide
 
-This document explains how FairTickets works from end to end. It is written in Simplified Technical English (ASD-STE100) for mentor presentations and technical questions.
+Use the three-minute script for the presentation. Use the technical reference after it to answer questions.
 
 ---
 
-## 1. System Architecture
+## Three-Minute Presentation Script
+
+Read the quoted text aloud. This round is an explanation of the process.
+
+**0:00–0:25 · The problem**
+
+> For Coldplay's Mumbai concerts, about 1.3 crore people joined the online queue. Tickets sold out in minutes. A complaint alleged that bots took places in the queue. Some resale listings asked for up to three lakh rupees, and fake tickets were also a concern.
+>
+> FairTickets addresses two problems. First, how do we limit repeated entries from bots? Second, how do we allocate limited tickets and check that each ticket is valid?
+
+**0:25–1:00 · Entry and repeated attempts**
+
+> Before a fan joins the queue, a trusted verifier signs a proof for that fan and their wallet. A wallet is the account that holds the ticket. The smart contract checks the verifier's signature, then accepts one entry for that identity and one for that wallet. A repeated request cannot add another queue entry for the same identity or wallet.
+>
+> The organiser also gets alerts for patterns such as repeated attempts and bursts of requests. The alerts are for review. The contract blocks duplicate entries. The verifier is responsible for giving each real person the correct identity proof.
+
+**1:00–1:45 · Queue and allocation**
+
+> Earlier entries get priority. The contract groups eligible entries that are recorded in the same blockchain block. A block is a group of transactions recorded together.
+>
+> Say there are 100 tickets. The first group has 80 fans, so all 80 get a reservation. The next group has 80 fans, but only 20 tickets remain. The contract runs a lottery among that second group for the 20 remaining slots. Later groups do not get a slot. If the second group has exactly 20 fans, all 20 get a reservation without a lottery.
+>
+> After entry closes, the contract finalizes reservations. Each fan with a reservation can claim one ticket at the original price.
+
+**1:45–2:25 · Resale and gate validation**
+
+> A ticket owner can resell their ticket through the contract. The resale price cannot exceed the original price or the price the seller paid. When a buyer pays, the contract records the new owner and changes the ticket version. That makes the seller's old gate pass invalid.
+>
+> At the venue, the gate submits the pass to the contract. The contract checks the current owner, the ticket version, the pass expiry, and whether the ticket was already used. If all checks pass, it records the admission. A second admission with the same ticket is rejected.
+
+**2:25–3:00 · Reliability and evidence**
+
+> The contract keeps the entry, allocation, ownership, and admission records. The website sends requests to our backend, which submits transactions to a local blockchain called Anvil.
+>
+> If a transaction reply is lost, the system checks the saved transaction before it reports a result. Gate staff wait for confirmation before admitting the fan.
+>
+> In a local test with 1,000 entries and 100 tickets, the first group received 80 reservations. The next group competed for 20, and later groups received none. Our goal is to preserve queue priority, use a lottery only when a group exceeds the remaining supply, and validate each ticket at the gate.
+
+---
+
+# Technical Reference for Questions
+
+## System Architecture
 
 FairTickets has three layers. Each layer has one clear responsibility:
 
@@ -23,7 +65,7 @@ FairTickets has three layers. Each layer has one clear responsibility:
 
 ---
 
-## 2. Separated Demo Identities
+## Separated Demo Identities
 
 In production, each user signs transactions from a personal wallet. In this local prototype, `init-demo` creates five separate Anvil wallets in `artifacts/demo-fixture.json`:
 
@@ -36,7 +78,7 @@ The `status` command reads the chain and does not change state. The `reset-demo`
 
 ---
 
-## 3. End-to-End Ticket Lifecycle
+## End-to-End Ticket Lifecycle
 
 The smart contract moves through `ENTRY`, `DRAW` (allocation), `CLAIM`, `RESALE`, and `GATE`, then returns `CLOSED`. The contract and CLI keep the existing `DRAW`, `lock-draw`, and `draw` names for compatibility.
 
@@ -105,7 +147,7 @@ The smart contract moves through `ENTRY`, `DRAW` (allocation), `CLAIM`, `RESALE`
 
 ---
 
-## 4. Concurrency, Crash Recovery, and Honest UI States
+## Concurrency, Crash Recovery, and Honest UI States
 
 The CLI and API protect users from race conditions and network drops:
 
@@ -127,7 +169,7 @@ The CLI and API protect users from race conditions and network drops:
 
 ---
 
-## 5. Review-Only Suspicious Activity Alerts
+## Review-Only Suspicious Activity Alerts
 
 The CLI writes lifecycle events to `activity-log.ndjson`. The `alerts` command (`GET /api/organiser/alerts`) applies three deterministic rules:
 
@@ -139,7 +181,7 @@ Every alert is marked `severity: "review"` with the note `"Review signal only; d
 
 ---
 
-## 6. Verification and Volume Evidence
+## Verification and Volume Evidence
 
 The repository includes these verification suites and recorded results:
 
@@ -151,7 +193,7 @@ The repository includes these verification suites and recorded results:
 
 ---
 
-## 7. Quick 2-Minute Mentor Explanation Script
+## Optional Two-Minute Explanation
 
 Use this short script when a mentor asks how the system works:
 
@@ -162,3 +204,4 @@ Use this short script when a mentor asks how the system works:
 > On resale, the contract enforces `price <= min(paidPrice, facePrice)` and rejects higher prices on-chain. When a fan buys a ticket, ownership moves to the buyer and the ticket `version` increments from `1` to `2`. At the gate, any `v1` credential signed by the seller is rejected as `STALE_CREDENTIAL`, the buyer's `v2` credential admits once, and any second scan fails as `ALREADY_ADMITTED`.
 >
 > If an RPC call times out, the API returns HTTP `202` (`unknown_recovering`) instead of a false failure, and `resume` settles the exact journaled transaction without double-spending or double-admitting. We also surface deterministic, review-only alerts on `/organiser` without auto-blocking users."
+

@@ -9,3 +9,4 @@ artifacts/volume-manifest.ndjson.gz
 *.log
 web/.next/
 web/tsconfig.tsbuildinfo
+artifacts/security-events.ndjson

@@ -1,4 +1,5 @@
 const net = require('node:net');
+const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { join, resolve } = require('node:path');
 const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync, appendFileSync } = require('node:fs');
@@ -14,6 +15,17 @@ const volumeSummaryPath = join(root, 'artifacts', 'volume-summary.json');
 const journalDir = join(stateDir, 'journal');
 const gateClaimsDir = join(stateDir, 'gate-claims');
 const activityLogPath = join(stateDir, 'activity-log.ndjson');
+const securityEventsLogPath = join(stateDir, 'security-events.ndjson');
+const securityCliRunnerPath = join(root, 'security', 'src', 'cli-runner.ts');
+
+function runSecurityCliRunner(mode, extraArgs = [], stdinInput = undefined) {
+  const stdout = execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--no-warnings', securityCliRunnerPath, mode, '--state-dir', stateDir, ...extraArgs],
+    { cwd: root, encoding: 'utf8', ...(stdinInput !== undefined ? { input: stdinInput } : {}) }
+  );
+  return JSON.parse(stdout);
+}
 
 function logActivity(event) {
   mkdirSync(stateDir, { recursive: true });
@@ -599,12 +611,22 @@ async function main() {
       return [role, { address: wallet.address, privateKey: wallet.privateKey }];
     }));
     const botWallet = ethers.Wallet.createRandom();
+    const sharedWifiControls = Array.from({ length: 4 }, (_, idx) => {
+      const wallet = ethers.Wallet.createRandom();
+      return {
+        label: `shared-wifi-fan-${idx + 1}`,
+        networkGroup: 'shared-wifi-venue-1',
+        address: wallet.address,
+        privateKey: wallet.privateKey,
+      };
+    });
     const attackParticipants = {
       repeatedEntrant: {
         label: 'bot-repeated-entrant',
         address: botWallet.address,
         privateKey: botWallet.privateKey,
       },
+      sharedWifiControls,
     };
     const facePriceWei = String(opts['face-price'] || '50000000000000000');
     const capacity = Number(opts.capacity || 2);
@@ -616,6 +638,7 @@ async function main() {
     await Promise.all([
       ...Object.values(roles).map((r) => rpc('anvil_setBalance', [r.address, funding])),
       rpc('anvil_setBalance', [attackParticipants.repeatedEntrant.address, funding]),
+      ...attackParticipants.sharedWifiControls.map((p) => rpc('anvil_setBalance', [p.address, funding])),
     ]);
     const latest = await rpc('eth_getBlockByNumber', ['latest', false]);
     const entryDeadline = BigInt(Number(BigInt(latest.timestamp)) + entryWindow);
@@ -637,8 +660,39 @@ async function main() {
   if (cmd === 'reset-demo') {
     // Explicit reset clears only locally persisted demo identity/state. It does not
     // rewind the chain; init-demo deploys a fresh contract after this command.
-    for (const p of [demoStatePath, demoFixturePath, activityLogPath]) if (existsSync(p)) unlinkSync(p);
+    for (const p of [demoStatePath, demoFixturePath, activityLogPath, securityEventsLogPath]) if (existsSync(p)) unlinkSync(p);
     console.log(JSON.stringify({ ok: true, ...(opts.json ? { txStatus: 'confirmed' } : {}), reset: true }, null, 2));
+    return;
+  }
+
+  if (cmd === 'security-eval') {
+    let rawEvent = opts.event;
+    if (typeof opts['event-file'] === 'string' && opts['event-file'].trim()) {
+      rawEvent = readFileSync(resolve(opts['event-file']), 'utf8');
+    }
+    if (typeof rawEvent !== 'string' || !rawEvent.trim()) {
+      throw new Error('Missing --event <json> or --event-file <path> for security-eval');
+    }
+    const result = runSecurityCliRunner('eval', ['--stdin'], rawEvent);
+    logActivity({
+      action: 'security-eval',
+      role: 'security-engine',
+      subject: null,
+      subjectLabel: null,
+      success: result.decision === 'ALLOW',
+      decision: result.decision,
+      riskScore: result.riskScore,
+      reasons: result.reasons,
+      decisionId: result.decisionId,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'security-benchmark') {
+    const extra = opts.write ? ['--write'] : [];
+    const result = runSecurityCliRunner('benchmark', extra);
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
 
@@ -1613,34 +1667,35 @@ async function main() {
   }
 
   if (cmd === 'demo-attack') {
+    const scenario = String(opts.scenario || 'repeated-entry');
+    if (scenario === 'account-farm') {
+      const farmResult = runSecurityCliRunner('account-farm');
+      const runId = `attack-${Date.now()}`;
+      logActivity({
+        action: 'security-farm',
+        role: 'security-engine',
+        subject: null,
+        subjectLabel: 'account-farm-50',
+        success: farmResult.farmAccountsFlagged === farmResult.farmAccountsTotal,
+        farmAccountsFlagged: farmResult.farmAccountsFlagged,
+        sharedWifiFlagged: farmResult.sharedWifiFlagged,
+      });
+      const { scenario: scenarioDetail, ...restFarm } = farmResult;
+      console.log(JSON.stringify({
+        ok: true,
+        txStatus: 'confirmed',
+        runId,
+        ...restFarm,
+        scenario: 'account-farm',
+        scenarioDetail,
+      }, null, 2));
+      return;
+    }
     if (!fixture || !demoState) {
       throw new Error('Demo state is missing. Run init-demo before demo-attack.');
     }
-    const scenario = String(opts.scenario || 'repeated-entry');
-    if (scenario !== 'repeated-entry') {
+    if (scenario !== 'repeated-entry' && scenario !== 'shared-wifi-control') {
       throw new Error(`Unsupported demo-attack scenario: ${scenario}`);
-    }
-    const attemptsCount = Number(opts.attempts || 3);
-    if (!Number.isInteger(attemptsCount) || attemptsCount < 2 || attemptsCount > 10) {
-      throw new Error(`--attempts must be an integer between 2 and 10 (received ${opts.attempts}).`);
-    }
-    const controlRole = String(opts['control-role'] || 'fanA');
-    if (!fixture.roles?.[controlRole]) {
-      throw new Error(`Unknown control role: ${controlRole}`);
-    }
-    if (!fixture.attackParticipants?.repeatedEntrant) {
-      const botWallet = ethers.Wallet.createRandom();
-      const funding = '0x' + (10n * 10n ** 18n).toString(16);
-      await rpc('anvil_setBalance', [botWallet.address, funding]);
-      fixture.attackParticipants = {
-        ...(fixture.attackParticipants || {}),
-        repeatedEntrant: {
-          label: 'bot-repeated-entrant',
-          address: botWallet.address,
-          privateKey: botWallet.privateKey,
-        },
-      };
-      writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { mode: 0o600 });
     }
 
     const contractAddress = resolveContract(opts);
@@ -1668,29 +1723,20 @@ async function main() {
       };
     };
 
-    const before = await readCounts();
-    if (before.phase !== 'ENTRY') {
-      throw new Error(`Cannot run ${scenario} in ${before.phase} phase (Entry closed).`);
-    }
-
-    const attester = new ethers.Wallet(fixture.roles.attester.privateKey);
-    const botInfo = fixture.attackParticipants.repeatedEntrant;
-    const botWallet = new ethers.Wallet(botInfo.privateKey);
-    const botSubjectLabel = String(opts.subject || botInfo.label || 'bot-repeated-entrant');
-    const botSubject = botSubjectLabel.startsWith('0x') && botSubjectLabel.length === 66
-      ? botSubjectLabel
-      : ethers.id(botSubjectLabel);
-
-    const controlWallet = new ethers.Wallet(fixture.roles[controlRole].privateKey);
-    const controlSubjectLabel = String(opts['control-subject'] || `demo-${controlRole}`);
-    const controlSubject = controlSubjectLabel.startsWith('0x') && controlSubjectLabel.length === 66
-      ? controlSubjectLabel
-      : ethers.id(controlSubjectLabel);
-
     const runId = `attack-${Date.now()}`;
     const attempts = [];
+    const attester = new ethers.Wallet(fixture.roles.attester.privateKey);
 
-    const submitEntryAttempt = async ({ wallet, roleLabel, participantLabel, subject, subjectLabel, attemptIndex, kind }) => {
+    const submitEntryAttempt = async ({
+      wallet,
+      roleLabel,
+      participantLabel,
+      subject,
+      subjectLabel,
+      attemptIndex,
+      kind,
+      networkGroup = null,
+    }) => {
       const attemptId = `${runId}-${kind}-${attemptIndex}`;
       const block = await rpc('eth_getBlockByNumber', ['latest', false]);
       const expiry = BigInt(Number(BigInt(block.timestamp)) + 300);
@@ -1715,6 +1761,7 @@ async function main() {
         kind,
         participantLabel,
         role: roleLabel,
+        ...(networkGroup ? { networkGroup } : {}),
         subject,
         subjectLabel,
         decision: allowed ? 'ALLOWED' : 'REJECTED',
@@ -1725,6 +1772,148 @@ async function main() {
         errorCode,
       });
     };
+
+    if (scenario === 'shared-wifi-control') {
+      const count = Number(opts.count || 4);
+      if (!Number.isInteger(count) || count < 2 || count > 4) {
+        throw new Error(`--count must be an integer between 2 and 4 (received ${opts.count}).`);
+      }
+      if (!Array.isArray(fixture.attackParticipants?.sharedWifiControls) || fixture.attackParticipants.sharedWifiControls.length < 4) {
+        const funding = '0x' + (10n * 10n ** 18n).toString(16);
+        const generated = Array.from({ length: 4 }, (_, idx) => {
+          const wallet = ethers.Wallet.createRandom();
+          return {
+            label: `shared-wifi-fan-${idx + 1}`,
+            networkGroup: 'shared-wifi-venue-1',
+            address: wallet.address,
+            privateKey: wallet.privateKey,
+          };
+        });
+        await Promise.all(generated.map((p) => rpc('anvil_setBalance', [p.address, funding])));
+        fixture.attackParticipants = {
+          ...(fixture.attackParticipants || {}),
+          sharedWifiControls: generated,
+        };
+        writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { mode: 0o600 });
+      }
+
+      const before = await readCounts();
+      if (before.phase !== 'ENTRY') {
+        throw new Error(`Cannot run ${scenario} in ${before.phase} phase (Entry closed).`);
+      }
+
+      const participants = fixture.attackParticipants.sharedWifiControls.slice(0, count);
+      const networkGroup = participants[0]?.networkGroup || 'shared-wifi-venue-1';
+      const controlSubjects = [];
+
+      for (let i = 0; i < participants.length; i++) {
+        const participant = participants[i];
+        const wallet = new ethers.Wallet(participant.privateKey);
+        const subjectLabel = participant.label;
+        const subject = ethers.id(subjectLabel);
+        controlSubjects.push({ wallet, subject });
+        await submitEntryAttempt({
+          wallet,
+          roleLabel: participant.label,
+          participantLabel: participant.label,
+          subject,
+          subjectLabel,
+          attemptIndex: i + 1,
+          kind: 'shared-wifi-control',
+          networkGroup: participant.networkGroup || networkGroup,
+        });
+      }
+
+      const [afterCounts, eligibilityFlags, alertSummary] = await Promise.all([
+        readCounts(),
+        Promise.all(controlSubjects.map(({ wallet }) => c.walletEntered(wallet.address))),
+        Promise.resolve(computeAlerts()),
+      ]);
+
+      const subjectSet = new Set(controlSubjects.map((item) => item.subject));
+      const relatedAlerts = alertSummary.alerts.filter(
+        (a) =>
+          (a.rule === 'REPEATED_ENTRY_SUBJECT' && subjectSet.has(a.subjectOrSlot)) ||
+          a.rule === 'REQUEST_BURST'
+      );
+      const subjectFlaggedSubjects = new Set(
+        relatedAlerts.filter((a) => a.rule === 'REPEATED_ENTRY_SUBJECT').map((a) => a.subjectOrSlot)
+      );
+      for (const a of attempts) {
+        a.reviewSignalTriggered = subjectFlaggedSubjects.has(a.subject);
+      }
+
+      const eligibleCount = eligibilityFlags.filter(Boolean).length;
+      const deniedCount = controlSubjects.length - eligibleCount;
+      const subjectFlaggedCount = subjectFlaggedSubjects.size;
+      const burstAlertTriggered = relatedAlerts.some((a) => a.rule === 'REQUEST_BURST');
+
+      console.log(JSON.stringify({
+        ok: true,
+        txStatus: 'confirmed',
+        runId,
+        scenario,
+        networkGroup,
+        before,
+        after: {
+          ...afterCounts,
+          sharedWifiEligibleCount: eligibleCount,
+          sharedWifiDeniedCount: deniedCount,
+        },
+        attempts,
+        relatedAlerts,
+        summary: {
+          participantsTotal: participants.length,
+          eligibleCount,
+          deniedCount,
+          subjectFlaggedCount,
+          burstAlertTriggered,
+          note: 'Review signals never auto-block distinct verified participants sharing a network.',
+        },
+      }, null, 2));
+      return;
+    }
+
+    const attemptsCount = Number(opts.attempts || 3);
+    if (!Number.isInteger(attemptsCount) || attemptsCount < 2 || attemptsCount > 10) {
+      throw new Error(`--attempts must be an integer between 2 and 10 (received ${opts.attempts}).`);
+    }
+    const controlRole = String(opts['control-role'] || 'fanA');
+    if (!fixture.roles?.[controlRole]) {
+      throw new Error(`Unknown control role: ${controlRole}`);
+    }
+    if (!fixture.attackParticipants?.repeatedEntrant) {
+      const botWallet = ethers.Wallet.createRandom();
+      const funding = '0x' + (10n * 10n ** 18n).toString(16);
+      await rpc('anvil_setBalance', [botWallet.address, funding]);
+      fixture.attackParticipants = {
+        ...(fixture.attackParticipants || {}),
+        repeatedEntrant: {
+          label: 'bot-repeated-entrant',
+          address: botWallet.address,
+          privateKey: botWallet.privateKey,
+        },
+      };
+      writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { mode: 0o600 });
+    }
+
+    const before = await readCounts();
+    if (before.phase !== 'ENTRY') {
+      throw new Error(`Cannot run ${scenario} in ${before.phase} phase (Entry closed).`);
+    }
+
+    const botInfo = fixture.attackParticipants.repeatedEntrant;
+    const botWallet = new ethers.Wallet(botInfo.privateKey);
+    const botSubjectLabel = String(opts.subject || botInfo.label || 'bot-repeated-entrant');
+    const botSubject = botSubjectLabel.startsWith('0x') && botSubjectLabel.length === 66
+      ? botSubjectLabel
+      : ethers.id(botSubjectLabel);
+
+    const controlWallet = new ethers.Wallet(fixture.roles[controlRole].privateKey);
+    const controlSubjectLabel = String(opts['control-subject'] || `demo-${controlRole}`);
+    const controlSubject = controlSubjectLabel.startsWith('0x') && controlSubjectLabel.length === 66
+      ? controlSubjectLabel
+      : ethers.id(controlSubjectLabel);
 
     for (let i = 1; i <= attemptsCount; i++) {
       await submitEntryAttempt({

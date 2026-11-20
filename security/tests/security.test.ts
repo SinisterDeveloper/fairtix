@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { runAccountFarmScenario } from '../simulator/account-farm.ts';
 import { runIbmBenchmarkSuite } from '../simulator/benchmark-ibm.ts';
@@ -445,4 +449,54 @@ test('Distributed bots scenario and full IBM Baseline vs Protected benchmark pas
   assert.equal(report.protected.classification.sharedWifiFalsePositiveRate, 0);
   assert.equal(report.deltas.unauthorizedCheckoutsPrevented, 20);
   assert.ok(report.deltas.legitimateFanTicketsGained >= 60);
+});
+
+test('CLI integration: security-eval (cumulative), demo-attack account-farm, and security-benchmark', () => {
+  const repoRoot = resolve(import.meta.dirname, '..', '..');
+  const cliPath = join(repoRoot, 'src', 'cli.cjs');
+  const tempStateDir = mkdtempSync(join(tmpdir(), 'fairtickets-sec-cli-'));
+
+  try {
+    const env = { ...process.env, FAIRTICKETS_STATE_DIR: tempStateDir };
+
+    const ev1 = JSON.stringify({
+      eventId: 'cli_evt_1',
+      timestamp: '2026-11-21T01:32:00+05:30',
+      eventType: 'QUEUE_JOIN',
+      eventIdempotencyKey: 'cli_k_1',
+      accountId: 'cli_user_1',
+      sessionId: 'cli_sess_1',
+      eventContext: { eventSaleId: 'concert_cli', deviceId: 'cli_dev_shared', networkId: 'net_1', paymentTokenHash: null },
+    });
+    const out1 = JSON.parse(execFileSync(process.execPath, [cliPath, 'security-eval', '--event', ev1, '--json'], { cwd: repoRoot, env, encoding: 'utf8' }));
+    assert.equal(out1.ok, true);
+    assert.equal(out1.decision, 'ALLOW');
+
+    const ev2 = JSON.stringify({
+      eventId: 'cli_evt_2',
+      timestamp: '2026-11-21T01:32:01+05:30',
+      eventType: 'QUEUE_JOIN',
+      eventIdempotencyKey: 'cli_k_2',
+      accountId: 'cli_user_2',
+      sessionId: 'cli_sess_2',
+      eventContext: { eventSaleId: 'concert_cli', deviceId: 'cli_dev_shared', networkId: 'net_2', paymentTokenHash: null },
+    });
+    const out2 = JSON.parse(execFileSync(process.execPath, [cliPath, 'security-eval', '--event', ev2, '--json'], { cwd: repoRoot, env, encoding: 'utf8' }));
+    assert.equal(out2.ok, true);
+    assert.equal(out2.decision, 'CHALLENGE');
+    assert.ok(out2.reasons.includes('LINKED_ACCOUNT_CLUSTER'));
+    assert.ok(out2.supportingEventIds.includes('cli_evt_1'));
+
+    const farmOut = JSON.parse(execFileSync(process.execPath, [cliPath, 'demo-attack', '--scenario', 'account-farm', '--json'], { cwd: repoRoot, env, encoding: 'utf8' }));
+    assert.equal(farmOut.ok, true);
+    assert.equal(farmOut.scenario, 'account-farm');
+    assert.equal(farmOut.farmAccountsFlagged, 50);
+    assert.equal(farmOut.sharedWifiFlagged, 0);
+
+    const benchOut = JSON.parse(execFileSync(process.execPath, [cliPath, 'security-benchmark', '--json'], { cwd: repoRoot, env, encoding: 'utf8' }));
+    assert.equal(benchOut.ok, true);
+    assert.equal(benchOut.ibmTargets.every((t: { passed: boolean }) => t.passed), true);
+  } finally {
+    rmSync(tempStateDir, { recursive: true, force: true });
+  }
 });
