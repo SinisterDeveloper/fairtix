@@ -21,15 +21,17 @@ export default function FanPage() {
   const [busy, setBusy] = useState(false);
   const isFan = role === 'fanA' || role === 'fanB';
 
-  async function refresh() {
+  async function refresh(): Promise<DemoStatusResponse | null> {
     try {
       const r = await fetch('/api/status', { cache: 'no-store' });
       const data = await r.json();
       if (!r.ok || data.ok === false) throw new Error(data.error || 'Could not load chain state.');
       setStatus(data);
       setStatusError('');
+      return data as DemoStatusResponse;
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : 'Could not load chain state.');
+      return null;
     }
   }
 
@@ -41,6 +43,12 @@ export default function FanPage() {
       if (saved) setTray(JSON.parse(saved));
     } catch {
       localStorage.removeItem('fairtickets-credentials');
+    }
+    try {
+      const savedEntered = localStorage.getItem('fairtickets-entered');
+      if (savedEntered) setEnteredByContract(JSON.parse(savedEntered));
+    } catch {
+      localStorage.removeItem('fairtickets-entered');
     }
     const onRole = (e: Event) => {
       const next = (e as CustomEvent<RoleId>).detail;
@@ -69,17 +77,24 @@ export default function FanPage() {
       });
       const data = (await r.json()) as ApiMutationResponse;
       setMessage(data);
-      if (endpoint === 'enter' && data.txStatus === 'confirmed' && status?.contract) {
-        const contractKey = status.contract.toLowerCase();
-        setEnteredByContract((prev) => ({
-          ...prev,
-          [contractKey]: {
-            ...(prev[contractKey] || {}),
-            [role]: { blockNumber: data.blockNumber ?? null },
-          },
-        }));
+      const latestStatus = await refresh();
+      const contractAddr = latestStatus?.contract || status?.contract;
+      if (endpoint === 'enter' && data.txStatus === 'confirmed' && contractAddr) {
+        const contractKey = contractAddr.toLowerCase();
+        setEnteredByContract((prev) => {
+          const next = {
+            ...prev,
+            [contractKey]: {
+              ...(prev[contractKey] || {}),
+              [role]: { blockNumber: data.blockNumber ?? null },
+            },
+          };
+          try {
+            localStorage.setItem('fairtickets-entered', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
       }
-      await refresh();
     } finally {
       setBusy(false);
     }
