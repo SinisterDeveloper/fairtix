@@ -103,7 +103,7 @@ function executeCombinedWorkload(protectionsEnabled: boolean, eventSaleId: strin
   });
 
   const farmActors = generateAccountFarmActors(50, 5);
-  const { bypassBots, linkedBots, stealthBots } = generateDistributedBotCohorts();
+  const { bypassBots, linkedBots, behavioralStealthBots, stealthBots } = generateDistributedBotCohorts();
   const hoarderBots = generateHoarderBots(15);
   const legitActors = generateLegitimateUsers({
     soloCount: 63,
@@ -374,8 +374,30 @@ function executeCombinedWorkload(protectionsEnabled: boolean, eventSaleId: strin
     recordDecisionInTrace(trace, ck, 'CHECKOUT_ATTEMPT');
   }
 
-  // Phase 4: Stealth Independent Bots (no linked signals) + 60 Legitimate Fans
-  const stealthTimeBase = coordTimeBase + 15_000;
+  // Phase 4: Behavioral Stealth Sniper Bots (unique IDs, valid grants, robotic sub-second pacing -> caught by ML)
+  const behavioralTimeBase = coordTimeBase + 10_000;
+  for (let i = 0; i < behavioralStealthBots.length; i++) {
+    const actor = behavioralStealthBots[i];
+    const trace = registerTrace(actor);
+    const t0 = behavioralTimeBase + i * 400;
+    const reg = engine.evaluate(buildSecurityEvent({ actor, eventType: 'ACCOUNT_REGISTER', eventSaleId, timestampMs: t0 }));
+    recordDecisionInTrace(trace, reg, 'ACCOUNT_REGISTER');
+    const join = engine.evaluate(buildSecurityEvent({ actor, eventType: 'QUEUE_JOIN', eventSaleId, timestampMs: t0 + 180 }));
+    recordDecisionInTrace(trace, join, 'QUEUE_JOIN');
+    const grant = engine.issueQueueGrant({ eventSaleId, accountId: actor.accountId, sessionId: actor.sessionId, issuedAtMs: t0 + 180 });
+    const resId = `res_bm_sniper_${actor.accountId}`;
+    const res = engine.evaluate(
+      buildSecurityEvent({ actor, eventType: 'RESERVATION_CREATE', eventSaleId, timestampMs: t0 + 360, queueGrant: grant, reservationId: resId })
+    );
+    recordDecisionInTrace(trace, res, 'RESERVATION_CREATE');
+    const ck = engine.evaluate(
+      buildSecurityEvent({ actor, eventType: 'CHECKOUT_ATTEMPT', eventSaleId, timestampMs: t0 + 540, queueGrant: grant, reservationId: resId })
+    );
+    recordDecisionInTrace(trace, ck, 'CHECKOUT_ATTEMPT');
+  }
+
+  // Phase 5: Stealth Independent Bots (no linked signals, human timing) + 80 Legitimate Fans
+  const stealthTimeBase = coordTimeBase + 20_000;
   for (let i = 0; i < stealthBots.length; i++) {
     const actor = stealthBots[i];
     const trace = registerTrace(actor);

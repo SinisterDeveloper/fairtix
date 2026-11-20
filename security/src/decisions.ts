@@ -13,7 +13,8 @@ export type ReasonCode =
   | 'QUEUE_BYPASS_ATTEMPT'
   | 'HOLD_LIMIT_EXCEEDED'
   | 'INVENTORY_EXHAUSTED'
-  | 'CLUSTER_PURCHASE_LIMIT_EXCEEDED';
+  | 'CLUSTER_PURCHASE_LIMIT_EXCEEDED'
+  | 'ML_BEHAVIORAL_ANOMALY';
 
 export const RISK_WEIGHTS: Readonly<Record<string, number>> = {
   ABNORMAL_RESERVATION_ABANDONMENT: 25,
@@ -50,6 +51,12 @@ export interface RiskDecision {
   hardFailure: boolean;
   clusterSummary?: ClusterSummary;
   supportingEventIds: string[];
+  mlScore?: number;
+  mlTopContributors?: Array<{
+    feature: string;
+    value: number;
+    contribution: number;
+  }>;
 }
 
 export interface DecisionAuditRecord {
@@ -73,6 +80,12 @@ export interface DecisionAuditRecord {
   }>;
   clusterSummary?: ClusterSummary;
   supportingEventIds: string[];
+  mlScore?: number;
+  mlTopContributors?: Array<{
+    feature: string;
+    value: number;
+    contribution: number;
+  }>;
 }
 
 /**

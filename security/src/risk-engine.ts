@@ -9,6 +9,8 @@ import {
   type RuleSignal,
 } from './decisions.ts';
 import { validateAndNormalizeEvent, type NormalizedSecurityEvent } from './events.ts';
+import { SessionBehaviorTracker } from './ml-features.ts';
+import { evaluateBehavioralMl, type MlInferenceResult } from './ml-scorer.ts';
 import { evaluateAccountCreationRule } from './rules/account-creation.ts';
 import { ExpeditingGuard, type IssueQueueGrantParams } from './rules/expediting.ts';
 import {
@@ -20,6 +22,7 @@ import { evaluateScalpingRule } from './rules/scalping.ts';
 
 export interface RiskEngineOptions {
   protectionsEnabled?: boolean;
+  mlEnabled?: boolean;
   graphOptions?: AccountGraphOptions;
   secret?: string;
 }
@@ -47,10 +50,12 @@ export interface EngineStats {
  */
 export class RiskEngine {
   readonly protectionsEnabled: boolean;
+  readonly mlEnabled: boolean;
   readonly graph: AccountGraph;
   readonly inventory: InventoryAbuseGuard;
   readonly expediting: ExpeditingGuard;
   readonly auditLog: DecisionAuditLog;
+  readonly behaviorTracker: SessionBehaviorTracker;
 
   private readonly idempotencyCache = new Map<string, RiskDecision>();
   private totalEventsEvaluated = 0;
@@ -62,10 +67,12 @@ export class RiskEngine {
 
   constructor(options: RiskEngineOptions = {}) {
     this.protectionsEnabled = options.protectionsEnabled ?? true;
+    this.mlEnabled = options.mlEnabled ?? true;
     this.graph = new AccountGraph(options.graphOptions);
     this.inventory = new InventoryAbuseGuard();
     this.expediting = new ExpeditingGuard(options.secret);
     this.auditLog = new DecisionAuditLog();
+    this.behaviorTracker = new SessionBehaviorTracker();
   }
 
   configureSale(
@@ -135,6 +142,8 @@ export class RiskEngine {
     const inventoryResult = this.inventory.evaluate(event, cluster, this.protectionsEnabled);
 
     const heuristicSignals: RuleSignal[] = [];
+    let mlResult: MlInferenceResult | null = null;
+    const features = this.behaviorTracker.recordAndExtract(event, cluster, saleState, inventoryResult);
     if (this.protectionsEnabled) {
       heuristicSignals.push(
         ...evaluateAccountCreationRule(event, cluster),
@@ -142,6 +151,12 @@ export class RiskEngine {
           maxTicketsPerCluster: saleState.maxTicketsPerCluster,
         })
       );
+      if (this.mlEnabled) {
+        mlResult = evaluateBehavioralMl(features, event.eventId);
+        if (mlResult.signal) {
+          heuristicSignals.push(mlResult.signal);
+        }
+      }
     }
 
     // 3. Combine hard authorization failures and heuristic signals
@@ -224,6 +239,12 @@ export class RiskEngine {
       hardFailure,
       clusterSummary,
       supportingEventIds,
+      ...(mlResult
+        ? {
+            mlScore: mlResult.mlScore,
+            mlTopContributors: mlResult.topContributors,
+          }
+        : {}),
     };
 
     this.recordAuditAndStats(
@@ -268,6 +289,8 @@ export class RiskEngine {
       ruleContributions,
       clusterSummary: result.clusterSummary,
       supportingEventIds: result.supportingEventIds,
+      ...(result.mlScore !== undefined ? { mlScore: result.mlScore } : {}),
+      ...(result.mlTopContributors !== undefined ? { mlTopContributors: result.mlTopContributors } : {}),
     });
   }
 }

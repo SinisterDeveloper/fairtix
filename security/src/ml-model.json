@@ -1,0 +1,73 @@
+{
+  "modelType": "l2_logistic_regression_behavioral",
+  "version": "1.0.0",
+  "trainedAt": "2026-11-20T21:15:37.036Z",
+  "featureNames": [
+    "queueToReserveMs",
+    "reserveToCheckoutMs",
+    "interEventMeanMs",
+    "interEventCv",
+    "eventsPerMinute",
+    "sessionEventCount",
+    "skippedReservation",
+    "abandonmentRatio",
+    "clusterAccountCount",
+    "competingInSaleCount",
+    "sharedIdentifierCount"
+  ],
+  "means": [
+    2068.564463,
+    2703.25387,
+    1788.594737,
+    0.292995,
+    91.38547,
+    3.825,
+    0.195,
+    0.200516,
+    6.29,
+    4.107143,
+    0.349286
+  ],
+  "stds": [
+    2272.211972,
+    2770.008341,
+    1650.465822,
+    0.22588,
+    67.860123,
+    0.90005,
+    0.396201,
+    0.331277,
+    11.687669,
+    7.305181,
+    0.621174
+  ],
+  "weights": [
+    -0.515489,
+    -0.445711,
+    -0.607477,
+    -0.863769,
+    0.929057,
+    -0.078028,
+    0.478267,
+    0.744564,
+    0.322807,
+    0.29066,
+    0.485798
+  ],
+  "bias": -0.227749,
+  "thresholds": {
+    "challengeProbability": 0.65,
+    "blockProbability": 0.85,
+    "minSessionEvents": 3
+  },
+  "validationMetrics": {
+    "trainSamples": 1400,
+    "heldOutSamples": 700,
+    "heldOutAccuracy": 1,
+    "heldOutPrecision": 1,
+    "heldOutRecall": 1,
+    "heldOutFpr": 0,
+    "heldOutF1": 1,
+    "heldOutRocAuc": 1
+  }
+}

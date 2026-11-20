@@ -19,6 +19,9 @@ export interface DistributedBotsResult {
   linkedBotsTotal: number;
   linkedBotsFlagged: number;
   linkedBotsPrevented: number;
+  behavioralStealthTotal: number;
+  behavioralStealthFlagged: number;
+  behavioralStealthPrevented: number;
   stealthBotsTotal: number;
   stealthBotsSucceeded: number;
   traces: ActorTrace[];
@@ -27,6 +30,7 @@ export interface DistributedBotsResult {
 export function generateDistributedBotCohorts(): {
   bypassBots: SimActor[];
   linkedBots: SimActor[];
+  behavioralStealthBots: SimActor[];
   stealthBots: SimActor[];
 } {
   const bypassBots: SimActor[] = [];
@@ -73,7 +77,22 @@ export function generateDistributedBotCohorts(): {
     }
   }
 
-  // 5 genuinely independent-looking stealth bots (honest limitation cohort: no shared graph identifiers)
+  // 10 behavioral stealth bots: zero shared identifiers, valid grants, but robotic sub-second pacing
+  const behavioralStealthBots: SimActor[] = [];
+  for (let i = 1; i <= 10; i++) {
+    behavioralStealthBots.push({
+      accountId: `sniper_bot_${i}`,
+      sessionId: `sess_sniper_${i}`,
+      group: 'behavioral_stealth_bot',
+      groundTruthMalicious: true,
+      deviceId: `device_sniper_unique_${i}`,
+      networkId: `ip_sniper_res_${i}`,
+      paymentTokenHash: `pay_sniper_unique_${i}`,
+      grantMode: 'valid',
+    });
+  }
+
+  // 5 genuinely independent-looking stealth bots (honest limitation cohort: no shared graph identifiers & human pacing)
   const stealthBots: SimActor[] = [];
   for (let i = 1; i <= 5; i++) {
     stealthBots.push({
@@ -88,7 +107,7 @@ export function generateDistributedBotCohorts(): {
     });
   }
 
-  return { bypassBots, linkedBots, stealthBots };
+  return { bypassBots, linkedBots, behavioralStealthBots, stealthBots };
 }
 
 export function runDistributedBotsScenario(options: {
@@ -114,7 +133,7 @@ export function runDistributedBotsScenario(options: {
     maxActiveHoldsPerCluster: 2,
   });
 
-  const { bypassBots, linkedBots, stealthBots } = generateDistributedBotCohorts();
+  const { bypassBots, linkedBots, behavioralStealthBots, stealthBots } = generateDistributedBotCohorts();
   const traces: ActorTrace[] = [];
 
   // 1. OAT-006 Queue Bypass Bots
@@ -259,7 +278,51 @@ export function runDistributedBotsScenario(options: {
     traces.push(trace);
   }
 
-  // 3. Stealth independent-looking bots (honest boundary: distinct devices, payments, IPs, human timing)
+  // 3. Behavioral stealth bots (no shared graph IDs, valid grants, robotic sub-second pacing caught by ML)
+  for (let i = 0; i < behavioralStealthBots.length; i++) {
+    const actor = behavioralStealthBots[i];
+    const trace = createEmptyTrace(actor);
+    const t0 = baseTimeMs + 20_000 + i * 500;
+    const reg = engine.evaluate(buildSecurityEvent({ actor, eventType: 'ACCOUNT_REGISTER', eventSaleId, timestampMs: t0 }));
+    recordDecisionInTrace(trace, reg, 'ACCOUNT_REGISTER');
+
+    const join = engine.evaluate(buildSecurityEvent({ actor, eventType: 'QUEUE_JOIN', eventSaleId, timestampMs: t0 + 180 }));
+    recordDecisionInTrace(trace, join, 'QUEUE_JOIN');
+
+    const grant = engine.issueQueueGrant({
+      eventSaleId,
+      accountId: actor.accountId,
+      sessionId: actor.sessionId,
+      issuedAtMs: t0 + 180,
+    });
+    const resId = `res_sniper_${actor.accountId}_${eventSaleId}`;
+    const res = engine.evaluate(
+      buildSecurityEvent({
+        actor,
+        eventType: 'RESERVATION_CREATE',
+        eventSaleId,
+        timestampMs: t0 + 360,
+        queueGrant: grant,
+        reservationId: resId,
+      })
+    );
+    recordDecisionInTrace(trace, res, 'RESERVATION_CREATE');
+
+    const checkout = engine.evaluate(
+      buildSecurityEvent({
+        actor,
+        eventType: 'CHECKOUT_ATTEMPT',
+        eventSaleId,
+        timestampMs: t0 + 540,
+        queueGrant: grant,
+        reservationId: resId,
+      })
+    );
+    recordDecisionInTrace(trace, checkout, 'CHECKOUT_ATTEMPT');
+    traces.push(trace);
+  }
+
+  // 4. Stealth independent-looking bots (honest boundary: distinct devices, payments, IPs, human timing)
   for (let i = 0; i < stealthBots.length; i++) {
     const actor = stealthBots[i];
     const trace = createEmptyTrace(actor);
@@ -284,6 +347,7 @@ export function runDistributedBotsScenario(options: {
   }
 
   const linkedTraces = traces.filter((t) => t.group === 'distributed_linked_bot');
+  const behavioralStealthTraces = traces.filter((t) => t.group === 'behavioral_stealth_bot');
   const stealthTraces = traces.filter((t) => t.group === 'stealth_independent_bot');
 
   return {
@@ -296,6 +360,9 @@ export function runDistributedBotsScenario(options: {
     linkedBotsTotal: linkedBots.length,
     linkedBotsFlagged: linkedTraces.filter((t) => t.flagged).length,
     linkedBotsPrevented: linkedTraces.filter((t) => !t.ticketAcquired).length,
+    behavioralStealthTotal: behavioralStealthBots.length,
+    behavioralStealthFlagged: behavioralStealthTraces.filter((t) => t.flagged).length,
+    behavioralStealthPrevented: behavioralStealthTraces.filter((t) => !t.ticketAcquired).length,
     stealthBotsTotal: stealthBots.length,
     stealthBotsSucceeded: stealthTraces.filter((t) => t.ticketAcquired).length,
     traces,

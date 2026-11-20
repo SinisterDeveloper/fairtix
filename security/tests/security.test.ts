@@ -500,3 +500,22 @@ test('CLI integration: security-eval (cumulative), demo-attack account-farm, and
     rmSync(tempStateDir, { recursive: true, force: true });
   }
 });
+
+test('Hybrid Rules + ML catches unlinked behavioral stealth bots missed by rules-only with 0 false positives', () => {
+  const rulesOnlyEngine = new RiskEngine({ protectionsEnabled: true, mlEnabled: false });
+  const rulesOnlyResult = runDistributedBotsScenario({ engine: rulesOnlyEngine, protectionsEnabled: true });
+  assert.equal(rulesOnlyResult.behavioralStealthFlagged, 0);
+  assert.equal(rulesOnlyResult.behavioralStealthPrevented, 0);
+
+  const hybridEngine = new RiskEngine({ protectionsEnabled: true, mlEnabled: true });
+  const hybridResult = runDistributedBotsScenario({ engine: hybridEngine, protectionsEnabled: true });
+  assert.equal(hybridResult.behavioralStealthTotal, 10);
+  assert.equal(hybridResult.behavioralStealthFlagged, 10);
+  assert.equal(hybridResult.behavioralStealthPrevented, 10);
+
+  const sniperDecision = hybridEngine.getAuditLog().find((d) => d.accountId === 'sniper_bot_1' && d.eventType === 'CHECKOUT_ATTEMPT');
+  assert.ok(sniperDecision);
+  assert.ok(sniperDecision.reasons.includes('ML_BEHAVIORAL_ANOMALY'));
+  assert.ok(typeof sniperDecision.mlScore === 'number' && sniperDecision.mlScore >= 65);
+  assert.ok(Array.isArray(sniperDecision.mlTopContributors) && sniperDecision.mlTopContributors.length > 0);
+});

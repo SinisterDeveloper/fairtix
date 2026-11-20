@@ -10,6 +10,7 @@ export type CohortGroup =
   | 'queue_bypass_bot'
   | 'distributed_linked_bot'
   | 'inventory_hoarder_bot'
+  | 'behavioral_stealth_bot'
   | 'stealth_independent_bot';
 
 export interface SimActor {

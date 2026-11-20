@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-20T20:53:00.051Z",
+  "generatedAt": "2026-11-20T21:19:44.561Z",
   "simulation": true,
   "eventSaleId": "concert_ibm_benchmark_v1",
   "capacity": 80,
@@ -42,13 +42,13 @@
     {
       "target": "Risk decisions",
       "expected": "Every action has recorded reasons and supporting events",
-      "observed": "802/802 decisions fully audited",
+      "observed": "847/847 decisions fully audited",
       "passed": true
     },
     {
       "target": "Distributed automation",
       "expected": "Report prevented malicious allocations and remaining successful attacks",
-      "observed": "115 prevented; 5 independent stealth attacks succeeded (Baseline malicious allocations: 80)",
+      "observed": "130 prevented; 0 independent stealth attacks succeeded (Baseline malicious allocations: 80)",
       "passed": true
     }
   ],
@@ -63,24 +63,24 @@
     "duplicateReleaseAttemptsIgnored": 30,
     "unauthorizedBypassAttempts": 20,
     "unauthorizedCheckoutsSucceeded": 20,
-    "totalDecisionsRecorded": 657,
-    "decisionsWithAuditReasonsOrCleanAllow": 657,
+    "totalDecisionsRecorded": 697,
+    "decisionsWithAuditReasonsOrCleanAllow": 697,
     "legitimateParticipantsTotal": 80,
     "legitimateFlaggedFalsePositives": 0,
     "legitimateTicketsAcquired": 0,
     "sharedWifiTotal": 15,
     "sharedWifiFlagged": 0,
     "sharedWifiTicketsAcquired": 0,
-    "maliciousParticipantsTotal": 120,
+    "maliciousParticipantsTotal": 130,
     "maliciousFlaggedTruePositives": 0,
     "maliciousTicketsAcquired": 80,
-    "preventedMaliciousAllocations": 40,
+    "preventedMaliciousAllocations": 50,
     "remainingSuccessfulStealthAttacks": 0,
     "classification": {
       "truePositives": 0,
       "falsePositives": 0,
       "trueNegatives": 80,
-      "falseNegatives": 120,
+      "falseNegatives": 130,
       "precision": 1,
       "recallOverall": 0,
       "recallLinkableAndPolicy": 0,
@@ -122,6 +122,16 @@
         "group": "distributed_linked_bot",
         "groundTruthMalicious": true,
         "participantsTotal": 30,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      },
+      "behavioral_stealth_bot": {
+        "group": "behavioral_stealth_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 10,
         "flaggedForSecurity": 0,
         "challengedCount": 0,
         "blockedCount": 0,
@@ -181,26 +191,26 @@
     "duplicateReleaseAttemptsIgnored": 30,
     "unauthorizedBypassAttempts": 20,
     "unauthorizedCheckoutsSucceeded": 0,
-    "totalDecisionsRecorded": 802,
-    "decisionsWithAuditReasonsOrCleanAllow": 802,
+    "totalDecisionsRecorded": 847,
+    "decisionsWithAuditReasonsOrCleanAllow": 847,
     "legitimateParticipantsTotal": 80,
     "legitimateFlaggedFalsePositives": 0,
-    "legitimateTicketsAcquired": 75,
+    "legitimateTicketsAcquired": 80,
     "sharedWifiTotal": 15,
     "sharedWifiFlagged": 0,
     "sharedWifiTicketsAcquired": 15,
-    "maliciousParticipantsTotal": 120,
-    "maliciousFlaggedTruePositives": 115,
-    "maliciousTicketsAcquired": 5,
-    "preventedMaliciousAllocations": 115,
-    "remainingSuccessfulStealthAttacks": 5,
+    "maliciousParticipantsTotal": 130,
+    "maliciousFlaggedTruePositives": 130,
+    "maliciousTicketsAcquired": 0,
+    "preventedMaliciousAllocations": 130,
+    "remainingSuccessfulStealthAttacks": 0,
     "classification": {
-      "truePositives": 115,
+      "truePositives": 130,
       "falsePositives": 0,
       "trueNegatives": 80,
-      "falseNegatives": 5,
+      "falseNegatives": 0,
       "precision": 1,
-      "recallOverall": 0.9583,
+      "recallOverall": 1,
       "recallLinkableAndPolicy": 1,
       "falsePositiveRate": 0,
       "sharedWifiFalsePositiveRate": 0
@@ -246,15 +256,25 @@
         "hardFailedCount": 25,
         "ticketsAcquired": 0
       },
+      "behavioral_stealth_bot": {
+        "group": "behavioral_stealth_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 10,
+        "flaggedForSecurity": 10,
+        "challengedCount": 0,
+        "blockedCount": 10,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      },
       "stealth_independent_bot": {
         "group": "stealth_independent_bot",
         "groundTruthMalicious": true,
         "participantsTotal": 5,
-        "flaggedForSecurity": 0,
+        "flaggedForSecurity": 5,
         "challengedCount": 0,
-        "blockedCount": 0,
+        "blockedCount": 5,
         "hardFailedCount": 0,
-        "ticketsAcquired": 5
+        "ticketsAcquired": 0
       },
       "shared_wifi_fan": {
         "group": "shared_wifi_fan",
@@ -284,14 +304,14 @@
         "challengedCount": 0,
         "blockedCount": 0,
         "hardFailedCount": 0,
-        "ticketsAcquired": 58
+        "ticketsAcquired": 63
       }
     }
   },
   "deltas": {
     "unauthorizedCheckoutsPrevented": 20,
-    "maliciousAllocationsReducedBy": 75,
-    "legitimateFanTicketsGained": 75,
+    "maliciousAllocationsReducedBy": 80,
+    "legitimateFanTicketsGained": 80,
     "legitimateDisruptionRateProtected": 0
   }
 }
