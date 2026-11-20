@@ -7,6 +7,7 @@ const { startAnvil } = require('./anvil.cjs');
 const root = resolve(__dirname, '..');
 const cliPath = join(__dirname, 'cli.cjs');
 const demoStatePath = join(root, 'artifacts', 'demo-state.json');
+const demoFixturePath = join(root, 'artifacts', 'demo-fixture.json');
 
 function runCli(args) {
   const out = execFileSync(process.execPath, [cliPath, ...args], {
@@ -18,6 +19,7 @@ function runCli(args) {
 
 async function main() {
   if (existsSync(demoStatePath)) unlinkSync(demoStatePath);
+  if (existsSync(demoFixturePath)) unlinkSync(demoFixturePath);
 
   const port = 8555;
   const rpcUrl = `http://127.0.0.1:${port}`;
@@ -29,11 +31,11 @@ async function main() {
   });
 
   try {
-    const init = runCli(['init-demo', '--rpc', rpcUrl]);
+    const init = runCli(['init-demo', '--capacity', '1', '--rpc', rpcUrl]);
     assert.equal(init.ok, true);
-    assert.equal(init.phase, 'ENTRY');
     assert.equal(init.capacity, 1);
     assert.equal(existsSync(demoStatePath), true);
+    assert.equal(existsSync(demoFixturePath), true);
 
     const enterA = runCli(['enter', '--role', 'fanA', '--subject', 'fan-a-loop1', '--json']);
     assert.equal(enterA.ok, true);
@@ -112,6 +114,7 @@ async function main() {
   } finally {
     await anvil.stop();
     if (existsSync(demoStatePath)) unlinkSync(demoStatePath);
+    if (existsSync(demoFixturePath)) unlinkSync(demoFixturePath);
   }
 }
 

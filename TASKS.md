@@ -201,16 +201,16 @@ web/
 > **Exit State:** Ugly UI where `enter → draw → claim → list → buy → redeem` works end-to-end on Anvil. Working demo exists at Hour 2.5.
 
 - **Dev 1 (Core / Blockchain):**
-  - [x] **L1-D1-1:** Create `artifacts/demo-fixture.json` with 5 Anvil accounts (`organiser`, `gate`, `attester`, `fanA`, `fanB`), `facePriceWei: "50000000000000000"` (`0.05 ETH`), `capacity: 1`, `entryWindow: 120`, `claimWindow: 300`, `resaleWindow: 300`, `gateWindow: 600`.
-  - [x] **L1-D1-2:** Add `init-demo` to `src/cli.cjs`: deploys `FairTickets`, writes `artifacts/demo-state.json` (`contract`, `editionId`, `codeHash`, `chainId`, `rpcUrl`).
-  - [x] **L1-D1-3:** Add `--role <role>` + auto-read of `artifacts/demo-state.json` to `src/cli.cjs` for `status`, `enter` (auto-attests), `lock-draw`, `draw`, `claim`, `list`, `buy`, `sign-gate`, `redeem`, `advance-time`, `mine`.
-  - [x] **L1-D1-4:** Extend `status --json` in `src/cli.cjs` to include `tickets[]`, `winners[]`, `facePriceWei`, `maxResalePriceWei`, and `roles`.
+  - [x] **L1-D1-1:** `init-demo` generates local Anvil role wallets (`organiser`, `gate`, `attester`, `fanA`, `fanB`) and writes them to ignored `artifacts/demo-fixture.json` (never committed).
+  - [x] **L1-D1-2:** `init-demo` deploys `FairTickets` and writes address, edition, code hash, chain ID, and RPC URL to ignored `artifacts/demo-state.json` (plus `reset-demo` for explicit practice resets).
+  - [x] **L1-D1-3:** Added `--role <role>`, automatic `demo-state.json` loading, and `--json` normalized responses across lifecycle commands (`enter` auto-attests, `lock-draw`, `draw`, `claim`, `list`, `buy`, `sign-gate`, `redeem`, `withdraw`, `resume`, `advance-time`, `mine`).
+  - [x] **L1-D1-4:** Extended `status --json` to report `tickets[]`, `winners[]`, `facePriceWei`, `maxResalePriceWei`, `roles` (balances + `proceeds`), and `volumeEvidence`.
 
 - **Dev 2 (Next.js Backend & Frontend):**
-  - [ ] **L1-D2-1:** Scaffold `web/` (Next.js App Router + TypeScript) and copy Section 2 into `web/src/lib/types.ts`.
-  - [ ] **L1-D2-2:** Build `web/src/lib/cli-bridge.ts` (`spawn('node', ['../src/cli.cjs', ...])`) with 15s timeout returning `unknown_recovering` (`202`) on timeout.
-  - [ ] **L1-D2-3:** Implement `GET /api/status` and happy-path `POST` routes (`/api/enter`, `/api/organiser/advance-and-lock`, `/api/organiser/draw`, `/api/claim`, `/api/list`, `/api/buy`, `/api/credential/sign`, `/api/gate/redeem`).
-  - [ ] **L1-D2-4:** Build barebones `/fan`, `/gate`, `/organiser` pages with unstyled buttons wired to those routes + raw `txHash` / `TicketState` output.
+- [x] **L1-D2-1:** Added a Next.js App Router scaffold and shared TypeScript types.
+- [x] **L1-D2-2:** Added a server-side CLI bridge with a 15-second timeout and `unknown_recovering` response.
+- [x] **L1-D2-3:** Added the status, lifecycle, credential, gate, withdrawal, resume, and alerts API routes.
+- [x] **L1-D2-4:** Added fan, gate, and organiser pages connected to the API and local chain state.
 
 **Loop 1 Sync (Hour 2.5):** Click through `enter → lock/draw → claim → list → buy → sign → redeem` on local Anvil.
 
@@ -220,14 +220,14 @@ web/
 > **Exit State (Hour 5 Mentor Checkpoint):** Clean, demo-ready UI proving contract enforcement: role separation, resale cap failure, stale-credential rejection, duplicate scan rejection, honest tx states, and restart-safe chain state.
 
 - **Dev 1 (Core / Blockchain):**
-  - [ ] **L2-D1-1:** Add `reset-demo` command (explicit practice reset) and verify `init-demo` / `status` never wipe an existing `artifacts/demo-state.json` unless `reset-demo` is called.
-  - [ ] **L2-D1-2:** Map contract reverts & gate rejections in `src/cli.cjs` to clean `errorCode` + readable `error` strings (`RESALE_CAP_EXCEEDED`, `STALE_CREDENTIAL`, `ALREADY_ADMITTED`, `FORGED_CREDENTIAL`, `NOT_WINNER`, `WRONG_PHASE`) and return `txStatus: "unknown_recovering"` on RPC/timeout errors.
+- [x] **L2-D1-1:** Added explicit `reset-demo`; `init-demo` refuses an existing state and `status` is read-only.
+- [x] **L2-D1-2:** Added normalized JSON transaction states, revert reason recovery, common error codes, and `unknown_recovering` for RPC/timeout errors.
   - [ ] **L2-D1-3:** Verify via CLI: above-cap `list` fails, seller `v1` credential rejected after `buy`, duplicate `redeem` rejected.
 
 - **Dev 2 (Next.js Backend & Frontend):**
-  - [ ] **L2-D2-1:** Build `<RoleSwitcher />` (Fan A, Fan B, Organiser, Gate) + active address badge + demo-key disclosure banner in `layout.tsx`.
-  - [ ] **L2-D2-2:** Build `<TxStatusBanner />` handling `pending`, `confirmed`, `rejected`, and `unknown_recovering` with clear visual states and human-readable errors.
-  - [ ] **L2-D2-3:** Build "Demo Credential Tray" across `/fan` and `/gate` so Fan A's `v1` credential can be saved before resale and tested at `/gate` after Fan B buys (`v2`) to show `REJECT (STALE_CREDENTIAL)` → `ADMIT`.
+- [x] **L2-D2-1:** Added a shared role switcher, address badge, and demo-key disclosure in the app layout.
+- [x] **L2-D2-2:** Added transaction state banners and a resume action for pending/recovering gate operations.
+- [x] **L2-D2-3:** Added a persistent local credential tray so old and current credentials can be selected at the gate.
 
 **Loop 2 Sync (Hour 5 — Mentor Feedback Round):** Live 2-minute demo of full lifecycle + cap rejection + stale credential rejection + duplicate scan rejection.
 
@@ -237,13 +237,13 @@ web/
 > **Exit State:** Resilient to disconnects/restarts, full financial/hash evidence dashboard, and deterministic review-only alerts live.
 
 - **Dev 1 (Core / Blockchain):**
-  - [ ] **L3-D1-1:** Ensure `resume --role <role> --scan-id <id> --json` and `withdraw --role <role> --json` return normalized `ApiMutationResponse`; verify contract balance + withdrawable credits reconcile.
-  - [ ] **L3-D1-2:** Add append-only `artifacts/activity-log.ndjson` in `src/cli.cjs` and implement `alerts --json` returning `AlertItem[]` (`REPEATED_ENTRY_SUBJECT >= 3`, `REPEATED_FAILED_SCAN >= 2`, `REQUEST_BURST >= 5 in 10s`, all `severity: "review"`).
-  - [ ] **L3-D1-3:** Include `volumeEvidence` summary from `artifacts/volume-summary.json` in `status --json`.
+- [ ] **L3-D1-1:** Resume and withdrawal now return normalized JSON states; status exposes contract balance and per-role credits. A live chain reconciliation remains to be recorded.
+- [x] **L3-D1-2:** Added an append-only activity log and review-only repeated-entry, failed-scan, and request-burst alerts.
+- [x] **L3-D1-3:** Status includes volume summary evidence when present.
 
 - **Dev 2 (Next.js Backend & Frontend):**
-  - [ ] **L3-D2-1:** Implement `POST /api/tx/resume`, `POST /api/withdraw`, and `GET /api/organiser/alerts`; wire **"Check / Resume"** button in `<TxStatusBanner />` for `unknown_recovering` states.
-  - [ ] **L3-D2-2:** Build `/organiser` Evidence & Detection UI: contract address + `codeHash`, role balances & withdrawal credits table, 100k workload stats, and **Suspicious Activity Review Panel** (clearly labeled *"Review signal only — does not auto-block"*).
+- [x] **L3-D2-1:** Added resume, withdrawal, and alerts endpoints; banners offer **Check / Resume** for uncertain gate operations.
+- [x] **L3-D2-2:** Added contract/hash, balances/credits, volume evidence, and a review-only alerts panel to `/organiser`.
   - [ ] **L3-D2-3:** Apply any Hour 5 mentor feedback on UX clarity and error messaging.
 
 **Loop 3 Sync (Hour 9):** Feature-complete demo; decide whether detection panel is stable for final judging.

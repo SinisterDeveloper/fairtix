@@ -1,7 +1,7 @@
 const net = require('node:net');
 const { createHash } = require('node:crypto');
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync } = require('node:fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync, appendFileSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
@@ -12,6 +12,33 @@ const demoStatePath = join(root, 'artifacts', 'demo-state.json');
 const volumeSummaryPath = join(root, 'artifacts', 'volume-summary.json');
 const journalDir = join(root, 'artifacts', 'journal');
 const gateClaimsDir = join(root, 'artifacts', 'gate-claims');
+const activityLogPath = join(root, 'artifacts', 'activity-log.ndjson');
+
+function logActivity(event) {
+  mkdirSync(join(root, 'artifacts'), { recursive: true });
+  appendFileSync(activityLogPath, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + '\n', { mode: 0o600 });
+}
+
+function classifyErrorCode(message, command) {
+  const reason = String(message || '').toLowerCase();
+  if (reason.includes('cap')) return 'RESALE_CAP_EXCEEDED';
+  if (reason.includes('version mismatch') || reason.includes('stale credential')) return 'STALE_CREDENTIAL';
+  if (reason.includes('already admitted')) return 'ALREADY_ADMITTED';
+  if (reason.includes('scan id') && (reason.includes('claimed') || reason.includes('finalized'))) return 'ALREADY_ADMITTED';
+  if (reason.includes('already claimed')) return 'ALREADY_CLAIMED';
+  if (reason.includes('not a winner')) return 'NOT_WINNER';
+  if (reason.includes('listing not active') || reason.includes('already listed')) return 'LISTING_NOT_ACTIVE';
+  if (reason.includes('incorrect payment') || reason.includes('price mismatch')) return 'INSUFFICIENT_PAYMENT';
+  if (reason.includes('signature') || reason.includes('only gate') || reason.includes('ticket not issued') || command === 'redeem') return 'FORGED_CREDENTIAL';
+  if (reason.includes('phase') || reason.includes('window') || reason.includes('entry closed') || reason.includes('draw')) return 'WRONG_PHASE';
+  return 'INTERNAL_ERROR';
+}
+
+function activitySubject(opts) {
+  if (!opts.subject && !opts.role) return null;
+  const subject = String(opts.subject || `demo-${opts.role}`);
+  return subject.startsWith('0x') && subject.length === 66 ? subject : ethers.id(subject);
+}
 
 function loadArtifact() {
   if (!existsSync(artifactPath)) {
@@ -316,6 +343,13 @@ async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_
   });
 
   const receipt = await waitForReceipt(rpc, txHash);
+  if (receipt.status !== '0x1') {
+    try {
+      await rpc('eth_call', [{ from: wallet.address, to: to || receipt.contractAddress, data, value: ethers.toQuantity(value) }, 'latest']);
+    } catch (err) {
+      receipt.revertReason = err.message || 'Contract execution reverted';
+    }
+  }
   await updateJournalEntry(wallet.address, txHash, {
     status: receipt.status === '0x1' ? 'CONFIRMED' : 'REVERTED',
     blockNumber: Number(BigInt(receipt.blockNumber)),
@@ -510,71 +544,113 @@ async function executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, d
 
 async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
-  const rpcUrl = resolveRpcUrl(opts);
-  const { rpc } = makeRpc(rpcUrl);
+  let rpcUrl = opts.rpc || 'http://127.0.0.1:8545';
+  let { rpc } = makeRpc(rpcUrl);
   const artifact = loadArtifact();
   const iface = new ethers.Interface(artifact.abi);
 
-  if (!cmd || cmd === 'help') {
-    console.log(
-      'Commands: init-demo, deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine'
-    );
+  // Demo keys are generated locally on first init and never committed. They are only
+  // funded on the isolated Anvil chain and are not production wallet credentials.
+  if (cmd === 'init-demo') {
+    if (existsSync(demoStatePath)) throw new Error('Demo state already exists. Use reset-demo before creating a new fixture.');
+    const rpcHost = new URL(rpcUrl).hostname;
+    if (!['127.0.0.1', 'localhost', '::1'].includes(rpcHost) || Number(BigInt(await rpc('eth_chainId'))) !== 31337) {
+      throw new Error('init-demo is restricted to a loopback Anvil node with chain ID 31337.');
+    }
+    const roles = Object.fromEntries(['organiser', 'gate', 'attester', 'fanA', 'fanB'].map((role) => {
+      const wallet = ethers.Wallet.createRandom();
+      return [role, { address: wallet.address, privateKey: wallet.privateKey }];
+    }));
+    const facePriceWei = String(opts['face-price'] || '50000000000000000');
+    const capacity = Number(opts.capacity || 2);
+    const entryWindow = Number(opts['entry-window'] || 120);
+    const claimWindow = Number(opts['claim-window'] || 300);
+    const resaleWindow = Number(opts['resale-window'] || 300);
+    const gateWindow = Number(opts['gate-window'] || 600);
+    const funding = '0x' + (10n * 10n ** 18n).toString(16);
+    await Promise.all(Object.values(roles).map((r) => rpc('anvil_setBalance', [r.address, funding])));
+    const latest = await rpc('eth_getBlockByNumber', ['latest', false]);
+    const entryDeadline = BigInt(Number(BigInt(latest.timestamp)) + entryWindow);
+    const editionId = ethers.hexlify(ethers.randomBytes(32));
+    const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
+    const tx = await factory.getDeployTransaction(roles.organiser.address, roles.attester.address, roles.gate.address,
+      BigInt(capacity), BigInt(facePriceWei), editionId, entryDeadline, BigInt(claimWindow), BigInt(resaleWindow), BigInt(gateWindow));
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet: new ethers.Wallet(roles.organiser.privateKey), to: null, data: tx.data, gasLimit: 4_000_000n, opId: 'demo-deploy' });
+    if (receipt.status !== '0x1') throw new Error(`Demo deployment reverted: ${txHash}`);
+    const codeHash = ethers.keccak256(await rpc('eth_getCode', [receipt.contractAddress, 'latest']));
+    const fixture = { roles, facePriceWei, capacity, entryWindow, claimWindow, resaleWindow, gateWindow };
+    const state = { contract: receipt.contractAddress, editionId, codeHash, chainId: Number(BigInt(await rpc('eth_chainId'))), rpcUrl };
+    writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { flag: 'wx', mode: 0o600 });
+    writeFileSync(demoStatePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
+    console.log(JSON.stringify({ ok: true, ...state, txHash, capacity, facePriceWei }, null, 2));
     return;
   }
 
-  if (cmd === 'init-demo') {
-    const fixture = loadDemoFixture();
-    if (!fixture) throw new Error('Missing artifacts/demo-fixture.json');
-    for (const info of Object.values(fixture.roles)) {
-      const jp = getJournalPath(info.address);
-      if (existsSync(jp)) unlinkSync(jp);
-      const balHex = await rpc('eth_getBalance', [info.address, 'latest']);
-      if (BigInt(balHex) < 10n * 10n ** 18n) {
-        await rpc('anvil_setBalance', [info.address, '0x21e19e0c9bab2400000']); // 10,000 ETH
-      }
-    }
-    const organiserWallet = new ethers.Wallet(fixture.roles.organiser.privateKey);
-    const block = await rpc('eth_getBlockByNumber', ['latest', false]);
-    const now = Number(BigInt(block.timestamp));
-    const editionId = ethers.hexlify(ethers.randomBytes(32));
-    const ev = fixture.event;
-    const entryDeadline = BigInt(now + Number(ev.entryWindow));
+  if (cmd === 'reset-demo') {
+    // Explicit reset clears only locally persisted demo identity/state. It does not
+    // rewind the chain; init-demo deploys a fresh contract after this command.
+    for (const p of [demoStatePath, demoFixturePath]) if (existsSync(p)) unlinkSync(p);
+    console.log(JSON.stringify({ ok: true, reset: true }, null, 2));
+    return;
+  }
 
-    const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
-    const deployTx = await factory.getDeployTransaction(
-      fixture.roles.organiser.address,
-      fixture.roles.attester.address,
-      fixture.roles.gate.address,
-      BigInt(ev.capacity),
-      BigInt(ev.facePriceWei),
-      editionId,
-      entryDeadline,
-      BigInt(ev.claimWindow),
-      BigInt(ev.resaleWindow),
-      BigInt(ev.gateWindow)
-    );
-    const { txHash, receipt } = await sendSignedTx({
-      rpc,
-      wallet: organiserWallet,
-      to: null,
-      data: deployTx.data,
-      gasLimit: 4_000_000n,
-      opId: 'init-demo',
-    });
-    if (receipt.status !== '0x1') throw new Error(`init-demo deploy reverted: ${txHash}`);
-    const contractAddress = receipt.contractAddress;
-    const runtimeCode = await rpc('eth_getCode', [contractAddress, 'latest']);
-    saveDemoState({
-      contract: contractAddress,
-      editionId,
-      codeHash: ethers.keccak256(runtimeCode),
-      chainId: Number(BigInt(await rpc('eth_chainId'))),
-      rpcUrl,
-      txHash,
-      deployedAt: new Date().toISOString(),
-    });
-    const snapshot = await buildStatusSnapshot(rpc, rpcUrl, contractAddress, artifact);
-    console.log(JSON.stringify(snapshot, null, 2));
+  let fixture = null;
+  let demoState = null;
+  if (existsSync(demoFixturePath)) fixture = JSON.parse(readFileSync(demoFixturePath, 'utf8'));
+  if (existsSync(demoStatePath)) demoState = JSON.parse(readFileSync(demoStatePath, 'utf8'));
+  if (demoState && !opts.rpc) opts.rpc = demoState.rpcUrl;
+  if (opts.role) {
+    if (!fixture || !fixture.roles[opts.role]) throw new Error(`Unknown or unavailable demo role: ${opts.role}`);
+    opts.key = opts.key || fixture.roles[opts.role].privateKey;
+    opts.contract = opts.contract || demoState?.contract;
+    opts['edition-id'] = opts['edition-id'] || demoState?.editionId;
+    opts.rpc = opts.rpc || demoState?.rpcUrl;
+  }
+  if (opts.rpc && opts.rpc !== rpcUrl) {
+    rpcUrl = opts.rpc;
+    ({ rpc } = makeRpc(rpcUrl));
+  }
+  if (demoState && !opts.contract && !['deploy'].includes(cmd)) opts.contract = demoState.contract;
+  if (demoState && !opts['edition-id']) opts['edition-id'] = demoState.editionId;
+  {
+    const jsonMode = Boolean(opts.json);
+    const log = console.log.bind(console);
+    console.log = (...args) => {
+      if (args.length === 1 && typeof args[0] === 'string') {
+        try {
+          const value = JSON.parse(args[0]);
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            const status = value.status;
+            const gateDecision = value.decision;
+            if (jsonMode && gateDecision === 'ADMIT') value.txStatus = 'confirmed';
+            else if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') value.txStatus = 'unknown_recovering';
+            else if (jsonMode && gateDecision === 'ALREADY_FINALIZED') value.txStatus = value.prior?.decision === 'ADMIT' ? 'confirmed' : value.prior?.decision === 'REJECT' ? 'rejected' : 'unknown_recovering';
+            else if (jsonMode && (status === '0x1')) value.txStatus = 'confirmed';
+            else if (jsonMode && (status === '0x0' || gateDecision === 'REJECT')) value.txStatus = 'rejected';
+            if (jsonMode && value.txHash) value.txHash = String(value.txHash);
+            if (jsonMode && value.txStatus) value.ok = value.txStatus === 'confirmed';
+            if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') {
+              value.errorCode = 'INTERNAL_ERROR';
+              value.error = 'Receipt confirmation did not include the expected admission event. Hold for staff review.';
+              value.reason = value.error;
+            }
+            if (jsonMode && value.txStatus === 'rejected') {
+              value.errorCode = classifyErrorCode(value.reason, cmd);
+              value.error = value.reason || 'The contract rejected this transaction.';
+              value.reason = value.error;
+            }
+            if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(cmd)) logActivity({ action: cmd, role: opts.role || null, subject: cmd === 'enter' ? activitySubject(opts) : null,
+              scanId: value.scanId || opts['scan-id'] || null, success: value.txStatus !== 'rejected' && value.status !== '0x0' && value.decision !== 'REJECT', txHash: value.txHash || null });
+            return log(jsonMode ? JSON.stringify(value, null, 2) : args[0]);
+          }
+        } catch {}
+      }
+      return log(...args);
+    };
+  }
+
+  if (!cmd || cmd === 'help') {
+    console.log('Commands: init-demo, reset-demo, deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine, alerts');
     return;
   }
 
@@ -632,9 +708,97 @@ async function main() {
   }
 
   if (cmd === 'status') {
-    const contractAddress = resolveContract(opts);
-    const snapshot = await buildStatusSnapshot(rpc, rpcUrl, contractAddress, artifact);
-    console.log(JSON.stringify(snapshot, null, 2));
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const c = new ethers.Contract(opts.contract, artifact.abi, provider);
+    const [
+      chainId,
+      editionId,
+      phase,
+      entrantsCount,
+      winnersCount,
+      issuedCount,
+      admittedCount,
+      drawn,
+      drawLocked,
+      claimDeadline,
+      resaleCutoff,
+      gateClose,
+      balance,
+      code,
+    ] = await Promise.all([
+      rpc('eth_chainId').then((x) => Number(BigInt(x))),
+      c.editionId(),
+      c.phase(),
+      c.entrantsCount(),
+      c.winnersCount(),
+      c.issuedCount(),
+      c.admittedCount(),
+      c.drawn(),
+      c.drawLocked(),
+      c.claimDeadline(),
+      c.resaleCutoff(),
+      c.gateClose(),
+      provider.getBalance(opts.contract),
+      provider.getCode(opts.contract),
+    ]);
+    const capacity = Number(await c.capacity());
+    const winners = drawn ? await c.getWinners() : [];
+    const tickets = await Promise.all(Array.from({ length: capacity }, async (_, i) => {
+      const slot = i + 1;
+      const [owner, version, paidPriceWei, admitted] = await c.getTicket(BigInt(slot));
+      const [seller, resalePriceWei, active] = await c.getListing(BigInt(slot), BigInt(version));
+      return { slot, owner, version: Number(version), paidPriceWei: paidPriceWei.toString(), admitted, listed: active, resalePriceWei: active ? resalePriceWei.toString() : '0', seller };
+    }));
+    const roles = {};
+    if (fixture) {
+      for (const [role, account] of Object.entries(fixture.roles)) {
+        roles[role] = {
+          role,
+          label: role === 'fanA' ? 'Fan A' : role === 'fanB' ? 'Fan B' : role[0].toUpperCase() + role.slice(1),
+          address: account.address,
+          ethBalanceWei: (await provider.getBalance(account.address)).toString(),
+          withdrawableWei: (await c.proceeds(account.address)).toString(),
+        };
+      }
+    }
+    let volumeEvidence;
+    if (existsSync(volumeSummaryPath)) {
+      const s = JSON.parse(readFileSync(volumeSummaryPath, 'utf8'));
+      volumeEvidence = { totalWrites: s.totalWrites ?? s.countedWrites?.total, writesPerSecond: s.writesPerSecond, manifestSha256: s.manifestSha256 };
+    }
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          chainId,
+          contract: opts.contract,
+          rpcUrl,
+          codeHash: ethers.keccak256(code),
+          editionId,
+          phase,
+          drawLocked,
+          drawn,
+          entrantsCount: Number(entrantsCount),
+          winnersCount: Number(winnersCount),
+          issuedCount: Number(issuedCount),
+          admittedCount: Number(admittedCount),
+          claimDeadline: Number(claimDeadline),
+          resaleCutoff: Number(resaleCutoff),
+          gateClose: Number(gateClose),
+          balanceWei: balance.toString(),
+          contractBalanceWei: balance.toString(),
+          capacity,
+          facePriceWei: (await c.facePrice()).toString(),
+          maxResalePriceWei: (await c.facePrice()).toString(),
+          winners: winners.map((w) => w.toLowerCase()),
+          tickets,
+          roles,
+          ...(volumeEvidence ? { volumeEvidence } : {}),
+        },
+        null,
+        2
+      )
+    );
     return;
   }
 
@@ -662,31 +826,24 @@ async function main() {
   if (cmd === 'enter') {
     const wallet = new ethers.Wallet(resolveRoleKey(opts));
     const contractAddress = resolveContract(opts);
-    const subject = opts.subject.startsWith('0x') && opts.subject.length === 66
-      ? opts.subject
-      : ethers.id(opts.subject);
+    const subjectText = opts.subject || `demo-${opts.role || wallet.address}`;
+    const subject = subjectText.startsWith('0x') && subjectText.length === 66
+      ? subjectText
+      : ethers.id(subjectText);
     let expiry = opts.expiry;
     let attestation = opts.attestation;
-    if (!attestation) {
-      const fixture = loadDemoFixture();
-      if (!fixture?.roles?.attester?.privateKey) {
-        throw new Error('Missing --attestation and no attester key in artifacts/demo-fixture.json');
-      }
+    if (!attestation && fixture?.roles?.attester) {
       const attester = new ethers.Wallet(fixture.roles.attester.privateKey);
       const chainId = Number(BigInt(await rpc('eth_chainId')));
       const block = await rpc('eth_getBlockByNumber', ['latest', false]);
-      expiry = String(Number(BigInt(block.timestamp)) + 300);
+      expiry = expiry || String(Number(BigInt(block.timestamp)) + 300);
       const editionId = resolveEditionId(opts);
       attestation = await signAttestation(attester, chainId, contractAddress, editionId, subject, wallet.address, BigInt(expiry));
     }
+    if (!attestation) throw new Error('enter requires --attestation unless a demo --role is selected.');
     const data = iface.encodeFunctionData('enter', [subject, BigInt(expiry), attestation]);
-    if (opts.json) {
-      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 300_000n });
-      console.log(JSON.stringify(res, null, 2));
-      return;
-    }
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 300_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
@@ -694,13 +851,8 @@ async function main() {
     const wallet = new ethers.Wallet(resolveRoleKey(opts, 'organiser'));
     const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('lockDraw', []);
-    if (opts.json) {
-      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 200_000n });
-      console.log(JSON.stringify(res, null, 2));
-      return;
-    }
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 200_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -708,13 +860,8 @@ async function main() {
     const wallet = new ethers.Wallet(resolveRoleKey(opts, 'organiser'));
     const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('draw', []);
-    if (opts.json) {
-      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 12_000_000n });
-      console.log(JSON.stringify(res, null, 2));
-      return;
-    }
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 12_000_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
@@ -728,11 +875,6 @@ async function main() {
       valueWei = await c.facePrice();
     }
     const data = iface.encodeFunctionData('claim', []);
-    if (opts.json) {
-      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, value: valueWei, gasLimit: 300_000n });
-      console.log(JSON.stringify(res, null, 2));
-      return;
-    }
     const { txHash, receipt } = await sendSignedTx({
       rpc,
       wallet,
@@ -741,7 +883,14 @@ async function main() {
       value: valueWei,
       gasLimit: 300_000n,
     });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    let ticket = null;
+    if (opts.json && receipt.status === '0x1') {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+      const slot = Number(await c.heldSlot(wallet.address));
+      if (slot > 0) ticket = await readTicketState(c, slot);
+    }
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
     return;
   }
 
@@ -749,13 +898,14 @@ async function main() {
     const wallet = new ethers.Wallet(resolveRoleKey(opts));
     const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('list', [BigInt(opts.slot), BigInt(opts.version), BigInt(opts.price)]);
-    if (opts.json) {
-      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 250_000n, slotHint: Number(opts.slot) });
-      console.log(JSON.stringify(res, null, 2));
-      return;
-    }
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 250_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    let ticket = null;
+    if (opts.json && receipt.status === '0x1') {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+      ticket = await readTicketState(c, Number(opts.slot));
+    }
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
     return;
   }
 
@@ -763,11 +913,6 @@ async function main() {
     const wallet = new ethers.Wallet(resolveRoleKey(opts));
     const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('buy', [BigInt(opts.slot), BigInt(opts.version), BigInt(opts.price)]);
-    if (opts.json) {
-      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, value: BigInt(opts.price), gasLimit: 300_000n, slotHint: Number(opts.slot) });
-      console.log(JSON.stringify(res, null, 2));
-      return;
-    }
     const { txHash, receipt } = await sendSignedTx({
       rpc,
       wallet,
@@ -776,7 +921,13 @@ async function main() {
       value: BigInt(opts.price),
       gasLimit: 300_000n,
     });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    let ticket = null;
+    if (opts.json && receipt.status === '0x1') {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+      ticket = await readTicketState(c, Number(opts.slot));
+    }
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, ...(ticket ? { ticket } : {}) }, null, 2));
     return;
   }
 
@@ -808,19 +959,21 @@ async function main() {
       BigInt(expiryNum)
     );
     if (opts.json) {
+      const credential = {
+        contract: contractAddress,
+        editionId,
+        slot: slotNum,
+        version: versionNum,
+        expiry: expiryNum,
+        ownerSig: sig,
+      };
       console.log(JSON.stringify({
         ok: true,
         txStatus: 'confirmed',
         txHash: null,
         error: null,
-        credential: {
-          contract: contractAddress,
-          editionId,
-          slot: slotNum,
-          version: versionNum,
-          expiry: expiryNum,
-          ownerSig: sig,
-        },
+        ...credential,
+        credential,
       }, null, 2));
       return;
     }
@@ -930,7 +1083,7 @@ async function main() {
         }, null, 2));
         return;
       }
-      console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, scanId }, null, 2));
+    console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, reason: receipt.revertReason || null, scanId }, null, 2));
       return;
     }
 
@@ -975,9 +1128,11 @@ async function main() {
       throw new Error('resume requires --address or --key');
     }
     const targetOpId = opts['op-id'] || opts['scan-id'] || null;
+    const targetTxHash = opts['tx-hash'] ? String(opts['tx-hash']).toLowerCase() : null;
     const entries = await withWalletLock(address, () => readJournal(address));
     const needsWork = entries.filter((e) => {
       if (targetOpId && e.opId !== targetOpId) return false;
+      if (targetTxHash && String(e.txHash).toLowerCase() !== targetTxHash) return false;
       if (e.status === 'PENDING') return true;
       if (e.meta?.kind === 'gate-redeem' && !existsSync(getGateFinalPath(e.meta.scanId))) {
         return true;
@@ -1078,7 +1233,9 @@ async function main() {
       });
     }
 
-    console.log(JSON.stringify({ address, resumedCount: resumed.length, resumed }, null, 2));
+    const txStatus = resumed.some((x) => x.status === 'ACTIVE_WORKER') ? 'pending'
+      : resumed.some((x) => x.status === 'REVERTED' || x.gateDecision === 'ABORTED_BEFORE_SEND') ? 'rejected' : 'confirmed';
+    console.log(JSON.stringify({ ok: true, txStatus, txHash: resumed.find((x) => x.txHash)?.txHash || null, address, resumedCount: resumed.length, resumed }, null, 2));
     return;
   }
 
@@ -1086,7 +1243,7 @@ async function main() {
     const wallet = new ethers.Wallet(opts.key);
     const data = iface.encodeFunctionData('withdraw', []);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 200_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -1116,6 +1273,27 @@ async function main() {
     return;
   }
 
+  if (cmd === 'alerts') {
+    const records = existsSync(activityLogPath)
+      ? readFileSync(activityLogPath, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    const alerts = [];
+    const entriesBySubject = new Map();
+    const failedByScan = new Map();
+    for (const row of records) {
+      if (row.action === 'enter' && row.subject) entriesBySubject.set(row.subject, (entriesBySubject.get(row.subject) || 0) + 1);
+      if (row.action === 'redeem' && row.scanId && !row.success) failedByScan.set(row.scanId, (failedByScan.get(row.scanId) || 0) + 1);
+    }
+    const timestamp = new Date().toISOString();
+    for (const [subjectOrSlot, count] of entriesBySubject) if (count >= 3) alerts.push({ id: `entry-${subjectOrSlot}`, severity: 'review', rule: 'REPEATED_ENTRY_SUBJECT', count, reason: 'The same demo subject has made repeated entry requests.', subjectOrSlot, timestamp, note: 'Review signal only; does not auto-block' });
+    for (const [subjectOrSlot, count] of failedByScan) if (count >= 2) alerts.push({ id: `scan-${subjectOrSlot}`, severity: 'review', rule: 'REPEATED_FAILED_SCAN', count, reason: 'A scan ID has repeated failed admission attempts.', subjectOrSlot, timestamp, note: 'Review signal only; does not auto-block' });
+    const now = Date.now();
+    const recent = records.filter((row) => now - Date.parse(row.timestamp) <= 10_000);
+    if (recent.length >= 5) alerts.push({ id: `burst-${Math.floor(now / 10000)}`, severity: 'review', rule: 'REQUEST_BURST', count: recent.length, reason: 'Five or more requests were recorded within ten seconds.', subjectOrSlot: 'event', timestamp, note: 'Review signal only; does not auto-block' });
+    console.log(JSON.stringify({ ok: true, alerts }, null, 2));
+    return;
+  }
+
   throw new Error(`Unknown command: ${cmd}`);
 }
 
@@ -1123,7 +1301,15 @@ module.exports = { withWalletLock, getWalletLockEndpoint };
 
 if (require.main === module) {
   main().catch((err) => {
-    console.error(err.message || err);
+    const parsed = parseArgs(process.argv.slice(2));
+    try { if (['enter', 'lock-draw', 'draw', 'claim', 'list', 'buy', 'redeem', 'withdraw', 'resume', 'advance-time'].includes(parsed.cmd)) logActivity({ action: parsed.cmd, role: parsed.opts.role || null, subject: parsed.cmd === 'enter' ? activitySubject(parsed.opts) : null,
+      scanId: parsed.opts['scan-id'] || null, success: false, error: err.message || String(err) }); } catch {}
+    if (parsed.opts.json) {
+      const message = err.message || String(err);
+      const unavailable = /timeout|timed out|network|rpc|socket|fetch failed|connection reset|econn|missing rpc response/i.test(message);
+      console.log(JSON.stringify({ ok: false, txStatus: unavailable ? 'unknown_recovering' : 'rejected', txHash: null,
+        errorCode: unavailable ? 'RPC_TIMEOUT' : classifyErrorCode(message, parsed.cmd), error: message, reason: message }, null, 2));
+    } else console.error(err.message || err);
     process.exit(1);
   });
 }
