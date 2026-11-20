@@ -189,62 +189,93 @@ export default function FanPage() {
   return (
     <main className="page">
       <p className="eyebrow">USER ZONE · FAN BOOKINGS</p>
-      <h1>Upcoming Events &amp; Bookings</h1>
+      <h1>Upcoming Shows &amp; Tickets</h1>
 
-      <section className="card">
-        <div className="card-head">
-          <div>
-            <h2>{eventMeta.title}</h2>
-            <p className="meta" style={{ margin: 0 }}>
-              {eventMeta.venue} · {eventMeta.dateLabel}
-            </p>
-          </div>
-          {status && <span className="pill ok">{friendlyStage}</span>}
+      <section aria-label="Upcoming shows">
+        <div className="card-head" style={{ marginBottom: 8 }}>
+          <h2>Upcoming shows</h2>
+          <span className="meta">Live booking powered by FairTickets</span>
         </div>
-        {status && (
-          <div className="metrics-grid">
-            <div className="metric">
-              <span>Ticket price</span>
-              <strong>{formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)}</strong>
+        <div className="shows-grid">
+          <article className="show-card live">
+            <div>
+              <div className="card-head" style={{ marginBottom: 8 }}>
+                <span className="pill ok">{friendlyStage}</span>
+                {status && <span className="meta">Phase: {status.phase}</span>}
+              </div>
+              <h3>{eventMeta.title}</h3>
+              <p className="show-meta">
+                {eventMeta.venue} · {eventMeta.dateLabel}
+              </p>
             </div>
-            <div className="metric">
-              <span>Total capacity</span>
-              <strong>{status.capacity} tickets</strong>
-            </div>
-            <div className="metric">
-              <span>Queue entries</span>
-              <strong>{status.entrantsCount}</strong>
-            </div>
-            <div className="metric">
-              <span>Booked so far</span>
+            <div className="show-footer">
               <strong>
-                {status.issuedCount} / {status.capacity}
+                {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '₹3,000'}
               </strong>
+              <span className="meta">
+                {status ? `${status.issuedCount}/${status.capacity} booked` : 'Loading…'}
+              </span>
             </div>
-          </div>
-        )}
+          </article>
+
+          <article className="show-card">
+            <div>
+              <div className="card-head" style={{ marginBottom: 8 }}>
+                <span className="pill">Coming Soon</span>
+              </div>
+              <h3>AR Rahman — Live in Concert</h3>
+              <p className="show-meta">Jio World Garden, Mumbai · Next Month</p>
+            </div>
+            <div className="show-footer">
+              <strong>₹2,500</strong>
+              <span className="meta">Queue opens soon</span>
+            </div>
+          </article>
+
+          <article className="show-card">
+            <div>
+              <div className="card-head" style={{ marginBottom: 8 }}>
+                <span className="pill">Coming Soon</span>
+              </div>
+              <h3>Sunburn Arena — Electronic Night</h3>
+              <p className="show-meta">Mahalaxmi Racecourse, Mumbai · Upcoming</p>
+            </div>
+            <div className="show-footer">
+              <strong>₹1,800</strong>
+              <span className="meta">Queue opens soon</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section className="status-strip" aria-label="Your ticket status">
+        <div>
+          <span>Active fan</span>
+          <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
+        </div>
+        <div>
+          <span>Event phase</span>
+          <strong>{status ? `${status.phase} (${friendlyStage})` : 'Connecting…'}</strong>
+        </div>
+        <div>
+          <span>Your booking status</span>
+          <strong>{isFan ? fanQueueStatus : 'Select Fan A or Fan B'}</strong>
+        </div>
+        <div>
+          <span>Tickets booked · Credit</span>
+          <strong>
+            {status ? `${status.issuedCount}/${status.capacity}` : '—'} ·{' '}
+            {status ? formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr) : '₹0'}
+          </strong>
+        </div>
+        <div style={{ alignSelf: 'center', justifySelf: 'end' }}>
+          <button className="secondary" onClick={() => void refresh()}>
+            Refresh bookings
+          </button>
+        </div>
       </section>
 
       <LifecycleStepper phase={status?.phase} context="fan" />
-
-      <div className="toolbar">
-        <div className="toolbar-meta">
-          <span>
-            Acting as{' '}
-            <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
-          </span>
-          {status && <span className="pill">{friendlyStage}</span>}
-          {isFan && status && (
-            <span className="meta">
-              {fanQueueStatus}
-              {' · '}Wallet credit: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
-            </span>
-          )}
-        </div>
-        <button className="secondary" onClick={() => void refresh()}>
-          Refresh bookings
-        </button>
-      </div>
 
       {!isFan && (
         <p className="role-warning" role="status">
