@@ -65,6 +65,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       return invoke(['redeem', '--role', 'gate', '--scan-id', str(body.scanId || randomBytes32()), '--slot', str(credential.slot), '--version', str(credential.version), '--expiry', str(credential.expiry), '--owner-sig', str(credential.ownerSig), ...json]);
     }
     case 'withdraw': return invoke(['withdraw', ...roleFlags, ...json]);
+    case 'attack/run': return invoke(['demo-attack', '--scenario', str(body.scenario, 'repeated-entry'), '--attempts', String(num(body.attempts, 3)), '--control-role', str(body.controlRole, 'fanA'), ...json]);
     case 'tx/resume': return invoke(['resume', ...roleFlags, ...(body.scanId ? ['--scan-id', str(body.scanId)] : []), ...(body.txHash ? ['--tx-hash', str(body.txHash)] : []), ...json]);
     default: return NextResponse.json({ ok: false, error: 'Unknown API route' }, { status: 404 });
   }

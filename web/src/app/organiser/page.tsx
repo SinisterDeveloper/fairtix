@@ -6,7 +6,7 @@ import { describeAllocation } from '@/lib/allocation';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
 import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
-type AlertsPayload = { ok?: boolean; alerts?: AlertItem[]; error?: string };
+type AlertsPayload = { ok?: boolean; alerts?: AlertItem[]; activityCount?: number; error?: string };
 
 export default function OrganiserPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
@@ -76,10 +76,46 @@ export default function OrganiserPage() {
 
   return (
     <main className="page">
-      <p className="eyebrow">ORGANISER CONSOLE</p>
-      <h1>Event operations</h1>
+      <p className="eyebrow">SECURITY COMMAND CENTER · ORGANISER CONSOLE</p>
+      <h1>Event operations &amp; live telemetry</h1>
 
       <LifecycleStepper phase={status?.phase} context="organiser" />
+
+      {status && (
+        <section className="card">
+          <div className="card-head">
+            <h2>Live command summary</h2>
+            <span className="pill ok">Phase: {status.phase}</span>
+          </div>
+          <div className="metrics-grid">
+            <div className="metric">
+              <span>Phase</span>
+              <strong>{status.phase}</strong>
+            </div>
+            <div className="metric">
+              <span>Capacity</span>
+              <strong>{status.capacity}</strong>
+            </div>
+            <div className="metric">
+              <span>Eligible entries</span>
+              <strong>{status.entrantsCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Allocations</span>
+              <strong>{status.winnersCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Claims</span>
+              <strong>{status.issuedCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Review alerts</span>
+              <strong>{alerts.length}</strong>
+              <small>{alertsData?.activityCount ?? 0} logged events</small>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <div className="card-head">
@@ -349,7 +385,9 @@ export default function OrganiserPage() {
       <section className="card">
         <div className="card-head">
           <h2>Suspicious activity</h2>
-          <span className="pill warn">Review signal only — does not auto-block</span>
+          <span className="pill warn">
+            Review signal only ({alertsData?.activityCount ?? 0} events) — does not auto-block
+          </span>
         </div>
         {alerts.length > 0 ? (
           <ul className="alert-list">
@@ -358,7 +396,9 @@ export default function OrganiserPage() {
                 <div className="alert-item-head">
                   <strong>{alert.rule}</strong>
                   <span className="pill">Count: {alert.count}</span>
-                  <code>{alert.subjectOrSlot}</code>
+                  {alert.grouping && <span className="pill">{alert.grouping}</span>}
+                  {alert.windowSeconds && <span className="meta">{alert.windowSeconds}s window</span>}
+                  <code>{alert.subjectLabel || alert.subjectOrSlot}</code>
                   <span className="meta">{new Date(alert.timestamp).toLocaleTimeString()}</span>
                 </div>
                 <p>{alert.reason}</p>
