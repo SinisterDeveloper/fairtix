@@ -374,6 +374,7 @@ async function main() {
   let demoState = null;
   if (existsSync(demoFixturePath)) fixture = JSON.parse(readFileSync(demoFixturePath, 'utf8'));
   if (existsSync(demoStatePath)) demoState = JSON.parse(readFileSync(demoStatePath, 'utf8'));
+  if (demoState && !opts.rpc) opts.rpc = demoState.rpcUrl;
   if (opts.role) {
     if (!fixture || !fixture.roles[opts.role]) throw new Error(`Unknown or unavailable demo role: ${opts.role}`);
     opts.key = opts.key || fixture.roles[opts.role].privateKey;
@@ -403,6 +404,12 @@ async function main() {
             else if (jsonMode && (status === '0x1')) value.txStatus = 'confirmed';
             else if (jsonMode && (status === '0x0' || gateDecision === 'REJECT')) value.txStatus = 'rejected';
             if (jsonMode && value.txHash) value.txHash = String(value.txHash);
+            if (jsonMode && value.txStatus) value.ok = value.txStatus === 'confirmed';
+            if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') {
+              value.errorCode = 'INTERNAL_ERROR';
+              value.error = 'Receipt confirmation did not include the expected admission event. Hold for staff review.';
+              value.reason = value.error;
+            }
             if (jsonMode && value.txStatus === 'rejected') {
               value.errorCode = classifyErrorCode(value.reason, cmd);
               value.error = value.reason || 'The contract rejected this transaction.';
