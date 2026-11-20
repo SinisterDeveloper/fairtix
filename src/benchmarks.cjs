@@ -1,5 +1,8 @@
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync } = require('node:fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('node:fs');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
 const { ethers, signAttestation, signGateCredential } = require('./toolchain.cjs');
 const { startAnvil } = require('./anvil.cjs');
 
@@ -58,6 +61,62 @@ async function sendAndMineWaves(rpc, rpcBatch, signedTxs, waveSize = 80) {
   return receipts;
 }
 
+async function sendBurstAndMine(rpc, rpcBatch, signedTxs) {
+  let inFlight = 0;
+  let peakConcurrency = 0;
+  const accepted = [];
+  const rpcErrors = [];
+  const t0 = performance.now();
+
+  await Promise.all(
+    signedTxs.map(async (raw, idx) => {
+      inFlight++;
+      if (inFlight > peakConcurrency) peakConcurrency = inFlight;
+      try {
+        const hash = await rpc('eth_sendRawTransaction', [raw]);
+        accepted.push({ idx, hash });
+      } catch (err) {
+        rpcErrors.push({ idx, message: err.message });
+      } finally {
+        inFlight--;
+      }
+    })
+  );
+
+  const burstDurationMs = Math.round(performance.now() - t0);
+  const receiptMap = new Map();
+  let blocksToDrain = 0;
+
+  while (receiptMap.size < accepted.length && blocksToDrain < 50) {
+    await rpc('evm_mine');
+    blocksToDrain++;
+    const remaining = accepted.filter((a) => !receiptMap.has(a.hash)).map((a) => a.hash);
+    for (let i = 0; i < remaining.length; i += 200) {
+      const chunk = remaining.slice(i, i + 200);
+      const res = await rpcBatch(chunk.map((h) => ['eth_getTransactionReceipt', [h]]));
+      for (let j = 0; j < chunk.length; j++) {
+        if (res[j]) receiptMap.set(chunk[j], res[j]);
+      }
+    }
+  }
+
+  if (receiptMap.size !== accepted.length) {
+    throw new Error(`Mempool did not drain: ${receiptMap.size}/${accepted.length} receipts after ${blocksToDrain} blocks`);
+  }
+
+  return {
+    receipts: accepted.map((a) => receiptMap.get(a.hash)),
+    burstMetrics: {
+      burstRequests: signedTxs.length,
+      acceptedByMempool: accepted.length,
+      rpcRejected: rpcErrors.length,
+      peakConcurrency,
+      burstDurationMs,
+      blocksToDrain,
+    },
+  };
+}
+
 async function sendOne(rpc, rpcBatch, wallet, nonce, to, data, value = 0n, gasLimit = 500_000n) {
   const raw = await signTx(wallet, nonce, to, data, value, gasLimit);
   const [receipt] = await sendAndMineWaves(rpc, rpcBatch, [raw], 1);
@@ -93,7 +152,9 @@ async function deployFairTickets(rpc, rpcBatch, deployer, nonce, {
   );
   const receipt = await sendOne(rpc, rpcBatch, deployer, nonce, null, deployTx.data, 0n, 4_000_000n);
   if (receipt.status !== '0x1') throw new Error('FairTickets deploy failed');
-  return { address: receipt.contractAddress, editionId, entryDeadline: now + entryWindow };
+  const runtimeCode = await rpc('eth_getCode', [receipt.contractAddress, 'latest']);
+  const runtimeCodeHash = ethers.keccak256(runtimeCode);
+  return { address: receipt.contractAddress, editionId, entryDeadline: now + entryWindow, runtimeCodeHash };
 }
 
 function computeExpectedWinners(entrants, targetHash, contractAddress, capacity) {
@@ -331,7 +392,7 @@ async function benchmark3(port) {
       ...entrants.map((w) => w.address),
     ]);
 
-    const { address: contractAddr, editionId } = await deployFairTickets(rpc, rpcBatch, deployer, 0, {
+    const { address: contractAddr, editionId, runtimeCodeHash } = await deployFairTickets(rpc, rpcBatch, deployer, 0, {
       organiser: organiser.address,
       attester: attester.address,
       gate: gate.address,
@@ -355,19 +416,48 @@ async function benchmark3(port) {
     await rpc('evm_mine');
     await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 12_000_000n);
 
-    // Burst 1,000 concurrent claim() transactions (one from each registered wallet)
+    // Single 1,000-request concurrent burst of claim() transactions
     const claimData = iface.encodeFunctionData('claim', []);
     const claimTxs = await Promise.all(
       entrants.map((w) => signTx(w, 1, contractAddr, claimData, FACE_PRICE, 250_000n))
     );
-    const claimReceipts = await sendAndMineWaves(rpc, rpcBatch, claimTxs, 100);
+    const { receipts: claimReceipts, burstMetrics } = await sendBurstAndMine(rpc, rpcBatch, claimTxs);
     const sales = claimReceipts.filter((r) => r.status === '0x1');
     const losses = claimReceipts.filter((r) => r.status === '0x0');
 
+    assert(burstMetrics.acceptedByMempool === 1000, `Expected 1000 accepted txs in burst, got ${burstMetrics.acceptedByMempool}`);
+    assert(burstMetrics.rpcRejected === 0, `Expected 0 RPC rejections, got ${burstMetrics.rpcRejected}`);
     assert(sales.length === 100, `Expected 100 sales, got ${sales.length}`);
     assert(losses.length === 900, `Expected 900 losing claims, got ${losses.length}`);
     assert(Number(await contract.issuedCount()) === 100, 'issuedCount must be 100');
+    assert(Number(await contract.unissuedCount()) === 0, 'unissuedCount must be 0');
     assert((await contract.proceeds(organiser.address)) === 100n * FACE_PRICE, 'Organiser proceeds must equal 100 * facePrice');
+
+    // Reconcile all 100 Claimed events against on-chain getTicket(1..100) and reservedWinner(1..100)
+    const claimedBySlot = new Map();
+    for (const r of sales) {
+      const ev = r.logs
+        .filter((l) => l.address.toLowerCase() === contractAddr.toLowerCase())
+        .map((l) => { try { return iface.parseLog(l); } catch { return null; } })
+        .find((e) => e && e.name === 'Claimed');
+      assert(ev, 'Successful claim receipt must emit Claimed event');
+      claimedBySlot.set(Number(ev.args.slot), ev.args.owner.toLowerCase());
+    }
+    assert(claimedBySlot.size === 100, `Expected 100 distinct claimed slots, got ${claimedBySlot.size}`);
+
+    const reconciledOwners = new Set();
+    for (let slot = 1; slot <= 100; slot++) {
+      const [owner, version, paidPrice, admitted] = await contract.getTicket(BigInt(slot));
+      const reserved = (await contract.reservedWinner(BigInt(slot))).toLowerCase();
+      const claimedOwner = claimedBySlot.get(slot);
+      assert(owner.toLowerCase() === claimedOwner, `Slot ${slot} owner mismatch vs Claimed event`);
+      assert(owner.toLowerCase() === reserved, `Slot ${slot} owner mismatch vs reservedWinner`);
+      assert(version === 1n, `Slot ${slot} version must be 1`);
+      assert(paidPrice === FACE_PRICE, `Slot ${slot} paidPrice must equal facePrice`);
+      assert(admitted === false, `Slot ${slot} must not be admitted yet`);
+      reconciledOwners.add(owner.toLowerCase());
+    }
+    assert(reconciledOwners.size === 100, `Expected 100 distinct reconciled owners, got ${reconciledOwners.size}`);
 
     // Burst 10 retry attempts from each of the 100 winners (1,000 txs)
     const winnerAddrs = new Set((await contract.getWinners()).map((a) => a.toLowerCase()));
@@ -378,7 +468,7 @@ async function benchmark3(port) {
         retryTxs.push(await signTx(w, 2 + k, contractAddr, claimData, FACE_PRICE, 250_000n));
       }
     }
-    const retryReceipts = await sendAndMineWaves(rpc, rpcBatch, retryTxs, 100);
+    const { receipts: retryReceipts } = await sendBurstAndMine(rpc, rpcBatch, retryTxs);
     const retrySuccess = retryReceipts.filter((r) => r.status === '0x1').length;
     assert(retrySuccess === 0, `Expected 0 retry sales, got ${retrySuccess}`);
     assert(Number(await contract.issuedCount()) === 100, 'issuedCount must remain 100 after retries');
@@ -386,10 +476,12 @@ async function benchmark3(port) {
 
     return {
       pass: true,
+      runtimeCodeHash,
       metrics: {
-        burstRequests: 1000,
+        ...burstMetrics,
         committedSales: sales.length,
         rejectedClaims: losses.length,
+        reconciledOwners: reconciledOwners.size,
         winnerRetryAttempts: retryTxs.length,
         winnerRetrySales: retrySuccess,
         organiserProceedsWei: (await contract.proceeds(organiser.address)).toString(),
@@ -796,12 +888,15 @@ async function benchmark7(port) {
     const attester = makeWallet(3);
     const gate = makeWallet(4);
     const fanA = makeWallet(7001);
+    const fanB = makeWallet(7002);
+    const fanC = makeWallet(7003);
 
     await fundWallets(rpcBatch, [
-      deployer.address, organiser.address, attester.address, gate.address, fanA.address,
+      deployer.address, organiser.address, attester.address, gate.address,
+      fanA.address, fanB.address, fanC.address,
     ]);
 
-    const { address: contractAddr, editionId } = await deployFairTickets(rpc, rpcBatch, deployer, 0, {
+    const { address: contractAddr, editionId, runtimeCodeHash } = await deployFairTickets(rpc, rpcBatch, deployer, 0, {
       organiser: organiser.address,
       attester: attester.address,
       gate: gate.address,
@@ -809,9 +904,11 @@ async function benchmark7(port) {
     });
     const contract = new ethers.Contract(contractAddr, fairTicketsArtifact.abi, provider);
 
-    const subj = ethers.id('b7-fanA');
-    const attSig = await signAttestation(attester, CHAIN_ID, contractAddr, editionId, subj, fanA.address, 9999999999n);
-    await sendOne(rpc, rpcBatch, fanA, 0, contractAddr, iface.encodeFunctionData('enter', [subj, 9999999999n, attSig]));
+    for (const [label, fan] of [['A', fanA], ['B', fanB], ['C', fanC]]) {
+      const subj = ethers.id(`b7-fan${label}`);
+      const attSig = await signAttestation(attester, CHAIN_ID, contractAddr, editionId, subj, fan.address, 9999999999n);
+      await sendOne(rpc, rpcBatch, fan, 0, contractAddr, iface.encodeFunctionData('enter', [subj, 9999999999n, attSig]));
+    }
 
     await advanceTime(rpc, 3700);
     await sendOne(rpc, rpcBatch, deployer, 1, contractAddr, iface.encodeFunctionData('lockDraw', []));
@@ -821,41 +918,120 @@ async function benchmark7(port) {
     await sendOne(rpc, rpcBatch, deployer, 2, contractAddr, iface.encodeFunctionData('draw', []), 0n, 3_000_000n);
 
     const slotA = Number(await contract.winnerSlot(fanA.address));
+    const slotB = Number(await contract.winnerSlot(fanB.address));
+    const slotC = Number(await contract.winnerSlot(fanC.address));
     await sendOne(rpc, rpcBatch, fanA, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
+    await sendOne(rpc, rpcBatch, fanB, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
+    await sendOne(rpc, rpcBatch, fanC, 1, contractAddr, iface.encodeFunctionData('claim', []), FACE_PRICE);
 
     await advanceTime(rpc, 7400); // enter GATE
     const block = await rpc('eth_getBlockByNumber', ['latest', false]);
-    const expiry = BigInt(Number(BigInt(block.timestamp)) + 60);
-    const ownerSig = await signGateCredential(fanA, CHAIN_ID, contractAddr, editionId, BigInt(slotA), 1n, expiry);
+    const expiry = BigInt(Number(BigInt(block.timestamp)) + 120);
+    const ownerSigA = await signGateCredential(fanA, CHAIN_ID, contractAddr, editionId, BigInt(slotA), 1n, expiry);
 
-    // 100 concurrent scan attempts with consecutive nonces 0..99 and distinct scanIds
+    // 100 concurrent scan attempts in one burst with consecutive nonces 0..99 and distinct scanIds
     const scanTxs = [];
     for (let i = 0; i < 100; i++) {
       const scanId = ethers.id(`concurrent-scan-${i}`);
-      const data = iface.encodeFunctionData('redeem', [BigInt(slotA), 1n, expiry, ownerSig, scanId]);
+      const data = iface.encodeFunctionData('redeem', [BigInt(slotA), 1n, expiry, ownerSigA, scanId]);
       scanTxs.push(await signTx(gate, i, contractAddr, data, 0n, 200_000n));
     }
-    const receipts = await sendAndMineWaves(rpc, rpcBatch, scanTxs, 100);
+    const { receipts, burstMetrics } = await sendBurstAndMine(rpc, rpcBatch, scanTxs);
     const admitted = receipts.filter((r) => r.status === '0x1');
     const denied = receipts.filter((r) => r.status === '0x0');
 
     assert(admitted.length === 1, `Expected 1 admission, got ${admitted.length}`);
     assert(denied.length === 99, `Expected 99 denials, got ${denied.length}`);
     assert(Number(await contract.admittedCount()) === 1, 'admittedCount must be 1');
-    const [, , , isAdmitted] = await contract.getTicket(BigInt(slotA));
-    assert(isAdmitted === true, 'Ticket must be marked admitted');
+    const [, , , isAdmittedA] = await contract.getTicket(BigInt(slotA));
+    assert(isAdmittedA === true, 'Ticket A must be marked admitted');
+
+    // Enable automine for CLI gate-station concurrency & crash-recovery tests
+    await rpc('evm_setAutomine', [true]);
+    const cliPath = join(root, 'src', 'cli.cjs');
+
+    // Test A: Two concurrent CLI gate workers competing on the exact same scanId
+    const ownerSigB = await signGateCredential(fanB, CHAIN_ID, contractAddr, editionId, BigInt(slotB), 1n, expiry);
+    const raceScanId = ethers.id(`cli-race-${Date.now()}`);
+    const raceArgs = [
+      cliPath, 'redeem', '--rpc', endpoint, '--key', gate.privateKey,
+      '--contract', contractAddr, '--slot', String(slotB), '--version', '1',
+      '--expiry', expiry.toString(), '--sig', ownerSigB, '--scan-id', raceScanId,
+    ];
+    const [w1, w2] = await Promise.allSettled([
+      execFileAsync(process.execPath, raceArgs, { encoding: 'utf8' }),
+      execFileAsync(process.execPath, raceArgs, { encoding: 'utf8' }),
+    ]);
+    const workerSuccesses = [w1, w2].filter((r) => r.status === 'fulfilled');
+    const workerFailures = [w1, w2].filter((r) => r.status === 'rejected');
+    assert(workerSuccesses.length === 1, `Expected 1 winning gate worker, got ${workerSuccesses.length}`);
+    assert(workerFailures.length === 1, `Expected 1 lock-rejected gate worker, got ${workerFailures.length}`);
+    const winOut = JSON.parse(workerSuccesses[0].value.stdout);
+    assert(winOut.decision === 'ADMIT', `Winning worker must ADMIT, got ${winOut.decision}`);
+
+    // Test B: Simulated crash after journal + atomic claim creation, recovered via `cli.cjs resume`
+    const ownerSigC = await signGateCredential(fanC, CHAIN_ID, contractAddr, editionId, BigInt(slotC), 1n, expiry);
+    const crashScanId = ethers.id(`cli-crash-${Date.now()}`);
+    const gateNonce = Number(BigInt(await rpc('eth_getTransactionCount', [gate.address, 'pending'])));
+    const crashData = iface.encodeFunctionData('redeem', [BigInt(slotC), 1n, expiry, ownerSigC, crashScanId]);
+    const crashRaw = await signTx(gate, gateNonce, contractAddr, crashData, 0n, 250_000n);
+    const crashTxHash = ethers.keccak256(crashRaw);
+
+    const journalPath = join(root, 'artifacts', 'journal', `${gate.address.toLowerCase()}.json`);
+    mkdirSync(join(root, 'artifacts', 'journal'), { recursive: true });
+    const existingJournal = existsSync(journalPath) ? JSON.parse(readFileSync(journalPath, 'utf8')) : [];
+    existingJournal.push({
+      opId: crashScanId,
+      nonce: gateNonce,
+      to: contractAddr,
+      txHash: crashTxHash,
+      signedBytes: crashRaw,
+      status: 'PENDING',
+      meta: { kind: 'gate-redeem', contract: contractAddr, scanId: crashScanId, slot: String(slotC), version: '1' },
+      timestamp: new Date().toISOString(),
+    });
+    writeFileSync(journalPath, JSON.stringify(existingJournal, null, 2));
+
+    const gateClaimPath = join(root, 'artifacts', 'gate-claims', `${crashScanId}.json`);
+    mkdirSync(join(root, 'artifacts', 'gate-claims'), { recursive: true });
+    writeFileSync(gateClaimPath, JSON.stringify({
+      status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotC), version: '1',
+    }, null, 2));
+
+    // Broadcast raw tx (simulating process crash right after send, before receipt/journal update)
+    await rpc('eth_sendRawTransaction', [crashRaw]);
+
+    const { stdout: resumeOut1 } = await execFileAsync(process.execPath, [
+      cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--op-id', crashScanId,
+    ], { encoding: 'utf8' });
+    const resume1 = JSON.parse(resumeOut1);
+    assert(resume1.resumedCount === 1, `Expected resumedCount 1, got ${resume1.resumedCount}`);
+    assert(resume1.resumed[0].status === 'CONFIRMED', `Expected CONFIRMED, got ${resume1.resumed[0].status}`);
+    assert(resume1.resumed[0].gateDecision === 'ADMIT', `Expected ADMIT, got ${resume1.resumed[0].gateDecision}`);
+
+    // Second resume must be a no-op
+    const { stdout: resumeOut2 } = await execFileAsync(process.execPath, [
+      cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--op-id', crashScanId,
+    ], { encoding: 'utf8' });
+    const resume2 = JSON.parse(resumeOut2);
+    assert(resume2.resumedCount === 0, `Second resume must have resumedCount 0, got ${resume2.resumedCount}`);
+    assert(Number(await contract.admittedCount()) === 3, 'Total admittedCount must be 3');
 
     const admittedGas = Number(BigInt(admitted[0].gasUsed));
     const failedGasTotal = denied.reduce((acc, r) => acc + Number(BigInt(r.gasUsed)), 0);
 
     return {
       pass: true,
+      runtimeCodeHash,
       metrics: {
+        ...burstMetrics,
         concurrentScans: 100,
         admitted: admitted.length,
         denied: denied.length,
         admittedGas,
         failedGasTotal,
+        cliConcurrentLockVerified: true,
+        cliCrashResumeVerified: true,
       },
     };
   } finally {
@@ -875,10 +1051,12 @@ async function main() {
   ];
 
   const results = [];
+  let sampleRuntimeCodeHash = null;
   for (const b of benchmarks) {
     const start = performance.now();
     try {
       const res = await b.fn();
+      if (res.runtimeCodeHash && !sampleRuntimeCodeHash) sampleRuntimeCodeHash = res.runtimeCodeHash;
       const durationMs = Math.round(performance.now() - start);
       results.push({ id: b.id, name: b.name, severity: b.severity, pass: res.pass, durationMs, metrics: res.metrics });
       console.log(`[PASS] #${b.id} ${b.name} (${durationMs} ms) -> ${JSON.stringify(res.metrics)}`);
@@ -897,7 +1075,8 @@ async function main() {
     '',
     `Run timestamp: ${new Date().toISOString()}`,
     `Chain: Anvil 1.7.1 (chainId 31337, shanghai, 30M gas limit)`,
-    `Contract codeHash: \`${fairTicketsArtifact.deployedBytecodeHash}\``,
+    `Template bytecode hash (pre-immutable): \`${fairTicketsArtifact.templateBytecodeHash || fairTicketsArtifact.deployedBytecodeHash}\``,
+    ...(sampleRuntimeCodeHash ? [`Deployed runtime codeHash (with constructor immutables): \`${sampleRuntimeCodeHash}\``] : []),
     '',
     '| # | Benchmark | Severity | Result | Duration | Key Metrics |',
     '|---|---|---|---|---|---|',

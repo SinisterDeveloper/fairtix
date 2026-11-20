@@ -6,12 +6,17 @@ const { startAnvil } = require('./anvil.cjs');
 const root = resolve(__dirname, '..');
 const cliPath = join(root, 'src', 'cli.cjs');
 
+function assert(cond, msg) {
+  if (!cond) throw new Error(`Demo assertion failed: ${msg}`);
+}
+
 function cli(args) {
   const out = execFileSync(process.execPath, [cliPath, ...args], { encoding: 'utf8' });
   return JSON.parse(out);
 }
 
 async function main() {
+  const demoStartMs = performance.now();
   const port = 8545;
   const anvil = await startAnvil({ port, blockTime: 1 });
   const rpc = anvil.endpoint;
@@ -46,7 +51,9 @@ async function main() {
     ]);
     console.log(deployed);
 
-    const { contractAddress, editionId } = deployed;
+    const { contractAddress, editionId, codeHash: deployedRuntimeCodeHash } = deployed;
+    assert(ethers.isAddress(contractAddress), 'Deployed contractAddress must be valid');
+    assert(deployedRuntimeCodeHash && deployedRuntimeCodeHash.startsWith('0x'), 'Deployed runtime codeHash missing');
 
     console.log('\n=== 2. ATTESTED ENTRY (Fan A & Fan B) ===');
     const attA = cli([
@@ -67,6 +74,8 @@ async function main() {
       'enter', '--rpc', rpc, '--key', fanB.privateKey, '--contract', contractAddress,
       '--subject', attB.subject, '--expiry', '9999999999', '--attestation', attB.attestation,
     ]);
+    assert(enterA.status === '0x1', `enterA failed: ${JSON.stringify(enterA)}`);
+    assert(enterB.status === '0x1', `enterB failed: ${JSON.stringify(enterB)}`);
     console.log({ enterA, enterB });
 
     console.log('\n=== 3. LOCK DRAW & DRAW ===');
@@ -74,16 +83,20 @@ async function main() {
     const lockRes = cli(['lock-draw', '--rpc', rpc, '--key', organiser.privateKey, '--contract', contractAddress]);
     cli(['mine', '--rpc', rpc, '--blocks', '3']);
     const drawRes = cli(['draw', '--rpc', rpc, '--key', organiser.privateKey, '--contract', contractAddress]);
+    assert(lockRes.status === '0x1', `lockDraw failed: ${JSON.stringify(lockRes)}`);
+    assert(drawRes.status === '0x1', `draw failed: ${JSON.stringify(drawRes)}`);
     console.log({ lockRes, drawRes });
 
     console.log('\n=== 4. PRIMARY CLAIM (Fan A) ===');
     const claimA = cli([
       'claim', '--rpc', rpc, '--key', fanA.privateKey, '--contract', contractAddress, '--value', '200000',
     ]);
+    assert(claimA.status === '0x1', `claimA failed: ${JSON.stringify(claimA)}`);
     const provider = new ethers.JsonRpcProvider(rpc);
     const artifact = require(join(root, 'artifacts', 'FairTickets.json'));
     const c = new ethers.Contract(contractAddress, artifact.abi, provider);
     const slotA = Number(await c.winnerSlot(fanA.address));
+    assert(slotA > 0, `slotA must be > 0, got ${slotA}`);
     console.log({ slotA, claimA });
 
     // Fan A signs a gate credential for v1 before reselling
@@ -100,6 +113,7 @@ async function main() {
       'list', '--rpc', rpc, '--key', fanA.privateKey, '--contract', contractAddress,
       '--slot', String(slotA), '--version', '1', '--price', '250000',
     ]);
+    assert(overCapList.status === '0x0', `overCapList must revert (0x0), got ${overCapList.status}`);
     console.log({ overCapList, expected: '0x0 (REVERTED)' });
 
     console.log('\n=== 6. LEGITIMATE CAPPED RESALE (Fan A -> Fan B at 180,000 wei) ===');
@@ -107,11 +121,16 @@ async function main() {
       'list', '--rpc', rpc, '--key', fanA.privateKey, '--contract', contractAddress,
       '--slot', String(slotA), '--version', '1', '--price', '180000',
     ]);
+    assert(validList.status === '0x1', `validList failed: ${JSON.stringify(validList)}`);
     const buyB = cli([
       'buy', '--rpc', rpc, '--key', fanB.privateKey, '--contract', contractAddress,
       '--slot', String(slotA), '--version', '1', '--price', '180000',
     ]);
+    assert(buyB.status === '0x1', `buyB failed: ${JSON.stringify(buyB)}`);
     const ticketAfterResale = cli(['ticket', '--rpc', rpc, '--contract', contractAddress, '--slot', String(slotA)]);
+    assert(ticketAfterResale.owner.toLowerCase() === fanB.address.toLowerCase(), 'Ticket owner must be Fan B');
+    assert(ticketAfterResale.version === 2, `Ticket version must be 2, got ${ticketAfterResale.version}`);
+    assert(ticketAfterResale.paidPrice === '180000', `Ticket paidPrice must be 180000, got ${ticketAfterResale.paidPrice}`);
     console.log({ validList, buyB, ticketAfterResale });
 
     console.log('\n=== 7. GATE: REJECT STALE SELLER CREDENTIAL (v1) & ADMIT BUYER CREDENTIAL (v2) ===');
@@ -120,6 +139,7 @@ async function main() {
       'redeem', '--rpc', rpc, '--key', gate.privateKey, '--contract', contractAddress,
       '--slot', String(slotA), '--version', '1', '--expiry', gateExpiry, '--sig', staleGateSigA.ownerSig,
     ]);
+    assert(rejectStale.decision === 'REJECT' && rejectStale.status === '0x0', `Stale v1 must be REJECT, got ${JSON.stringify(rejectStale)}`);
     const freshGateSigB = cli([
       'sign-gate', '--rpc', rpc, '--key', fanB.privateKey, '--contract', contractAddress,
       '--edition-id', editionId, '--slot', String(slotA), '--version', '2', '--expiry', gateExpiry,
@@ -128,13 +148,23 @@ async function main() {
       'redeem', '--rpc', rpc, '--key', gate.privateKey, '--contract', contractAddress,
       '--slot', String(slotA), '--version', '2', '--expiry', gateExpiry, '--sig', freshGateSigB.ownerSig,
     ]);
+    assert(admitB.decision === 'ADMIT' && admitB.version === '2', `Fresh v2 must be ADMIT, got ${JSON.stringify(admitB)}`);
     console.log({ rejectStale, admitB });
 
     console.log('\n=== 8. WITHDRAW PROCEEDS & RECONCILE FINAL STATE ===');
     const withdrawOrg = cli(['withdraw', '--rpc', rpc, '--key', organiser.privateKey, '--contract', contractAddress]);
     const withdrawFanA = cli(['withdraw', '--rpc', rpc, '--key', fanA.privateKey, '--contract', contractAddress]);
+    assert(withdrawOrg.status === '0x1', `withdrawOrg failed: ${JSON.stringify(withdrawOrg)}`);
+    assert(withdrawFanA.status === '0x1', `withdrawFanA failed: ${JSON.stringify(withdrawFanA)}`);
     const finalStatus = cli(['status', '--rpc', rpc, '--contract', contractAddress]);
-    console.log({ withdrawOrg, withdrawFanA, finalStatus });
+    assert(finalStatus.balanceWei === '0', `Final balanceWei must be 0, got ${finalStatus.balanceWei}`);
+    assert(finalStatus.issuedCount === 1, `issuedCount must be 1, got ${finalStatus.issuedCount}`);
+    assert(finalStatus.admittedCount === 1, `admittedCount must be 1, got ${finalStatus.admittedCount}`);
+    assert(finalStatus.codeHash === deployedRuntimeCodeHash, 'status codeHash must match deploy runtime codeHash');
+
+    const durationMs = Math.round(performance.now() - demoStartMs);
+    assert(durationMs <= 60_000, `Demo exceeded 60-second budget (${durationMs} ms)`);
+    console.log({ withdrawOrg, withdrawFanA, finalStatus, durationMs, passed: true });
   } finally {
     anvil.stop();
   }

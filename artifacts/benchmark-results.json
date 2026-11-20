@@ -4,12 +4,12 @@
     "name": "Fair allocation",
     "severity": "Critical",
     "pass": true,
-    "durationMs": 4272,
+    "durationMs": 4053,
     "metrics": {
       "entrants": 1000,
       "winners": 100,
       "uniqueWinners": 100,
-      "drawGasUsed": 7383620,
+      "drawGasUsed": 7391038,
       "independentDrawVerified": true
     }
   },
@@ -18,7 +18,7 @@
     "name": "Duplicate-entry resistance",
     "severity": "Critical",
     "pass": true,
-    "durationMs": 3273,
+    "durationMs": 2954,
     "metrics": {
       "attempts": 1000,
       "succeeded": 1,
@@ -31,11 +31,17 @@
     "name": "No overselling",
     "severity": "Critical",
     "pass": true,
-    "durationMs": 5922,
+    "durationMs": 9571,
     "metrics": {
       "burstRequests": 1000,
+      "acceptedByMempool": 1000,
+      "rpcRejected": 0,
+      "peakConcurrency": 1000,
+      "burstDurationMs": 574,
+      "blocksToDrain": 2,
       "committedSales": 100,
       "rejectedClaims": 900,
+      "reconciledOwners": 100,
       "winnerRetryAttempts": 1000,
       "winnerRetrySales": 0,
       "organiserProceedsWei": "20000000"
@@ -46,7 +52,7 @@
     "name": "Resale price cap",
     "severity": "Critical",
     "pass": true,
-    "durationMs": 420,
+    "durationMs": 416,
     "metrics": {
       "aboveFaceRejected": true,
       "aboveLastPaidRejected": true,
@@ -61,7 +67,7 @@
     "name": "Credential invalidation",
     "severity": "High",
     "pass": true,
-    "durationMs": 357,
+    "durationMs": 350,
     "metrics": {
       "aToBStaleRejected": true,
       "bFreshAdmitted": true,
@@ -75,7 +81,7 @@
     "name": "Forgery rejection",
     "severity": "High",
     "pass": true,
-    "durationMs": 249,
+    "durationMs": 234,
     "metrics": {
       "forgeriesTested": 6,
       "allRejected": true,
@@ -87,13 +93,21 @@
     "name": "One-time admission",
     "severity": "Critical",
     "pass": true,
-    "durationMs": 376,
+    "durationMs": 2617,
     "metrics": {
+      "burstRequests": 100,
+      "acceptedByMempool": 100,
+      "rpcRejected": 0,
+      "peakConcurrency": 100,
+      "burstDurationMs": 73,
+      "blocksToDrain": 1,
       "concurrentScans": 100,
       "admitted": 1,
       "denied": 99,
       "admittedGas": 84066,
-      "failedGasTotal": 3484197
+      "failedGasTotal": 3484197,
+      "cliConcurrentLockVerified": true,
+      "cliCrashResumeVerified": true
     }
   }
 ]

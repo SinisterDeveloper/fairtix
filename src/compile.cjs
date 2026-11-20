@@ -24,6 +24,7 @@ const fairTicketsArtifact = {
   abi: fairTickets.abi,
   bytecode: '0x' + fairTickets.evm.bytecode.object,
   deployedBytecode: '0x' + fairTickets.evm.deployedBytecode.object,
+  templateBytecodeHash: ethers.keccak256('0x' + fairTickets.evm.deployedBytecode.object),
   deployedBytecodeHash: ethers.keccak256('0x' + fairTickets.evm.deployedBytecode.object),
 };
 writeFileSync(join(artifactsDir, 'FairTickets.json'), JSON.stringify(fairTicketsArtifact, null, 2));

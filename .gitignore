@@ -1,4 +1,5 @@
 node_modules/
 artifacts/journal/
+artifacts/gate-claims/
 artifacts/gate-journal.json
 *.log
