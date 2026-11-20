@@ -67,8 +67,17 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
   switch (endpoint) {
     case 'enter': return invoke(['enter', ...roleFlags, '--subject', str(body.subject, `demo-${role(body)}`), ...json]);
     case 'organiser/advance-and-lock': {
-      const advance = await runCli(['advance-time', '--seconds', String(num(body.seconds, 121))]);
-      if (advance.txStatus === 'unknown_recovering') return NextResponse.json(advance, { status: 202 });
+      if (body.seconds !== undefined) {
+        const advance = await runCli(['advance-time', '--seconds', String(num(body.seconds, 121))]);
+        if (advance.txStatus === 'unknown_recovering') return NextResponse.json(advance, { status: 202 });
+      } else {
+        for (let step = 0; step < 12; step++) {
+          const st = (await runCli(['status'])) as Partial<DemoStatusResponse> & { ok?: boolean };
+          if (!st || st.ok === false || (st.phase && st.phase.toUpperCase() !== 'ENTRY')) break;
+          const advance = await runCli(['advance-time', '--seconds', '121']);
+          if (advance.txStatus === 'unknown_recovering') return NextResponse.json(advance, { status: 202 });
+        }
+      }
       return invoke(['lock-draw', '--role', 'organiser', ...json]);
     }
     case 'organiser/advance-time': return invoke(['advance-time', '--seconds', String(num(body.seconds, 301)), ...json]);
