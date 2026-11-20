@@ -43,6 +43,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
     case 'buy': return invoke(['buy', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
     case 'credential/sign': {
       const signed = await runCli(['sign-gate', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), ...(body.expirySeconds ? ['--expiry', str(body.expirySeconds)] : []), ...json]);
+      if (!signed.ownerSig) {
+        const failure = signed as ApiMutationResponse;
+        return NextResponse.json(failure, { status: httpStatus(failure) });
+      }
       const credential = { contract: signed.contract, editionId: signed.editionId, slot: signed.slot, version: signed.version, expiry: signed.expiry, ownerSig: signed.ownerSig };
       return NextResponse.json({ ok: true, txStatus: 'confirmed', txHash: null, credential });
     }
