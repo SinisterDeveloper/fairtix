@@ -6,13 +6,23 @@ import TxStatusBanner from '@/components/TxStatusBanner';
 import { describeAllocation } from '@/lib/allocation';
 import { DEFAULT_EVENT_META, loadEventMeta, saveEventMeta } from '@/lib/event-meta';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
-import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
+import type {
+  AlertItem,
+  ApiMutationResponse,
+  DemoStatusResponse,
+  RoleId,
+  SecurityBenchmarkResponse,
+  SecurityStatusResponse,
+} from '@/lib/types';
 
 type AlertsPayload = { ok?: boolean; alerts?: AlertItem[]; activityCount?: number; error?: string };
 
 export default function OrganiserPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsPayload | null>(null);
+  const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
+  const [benchmark, setBenchmark] = useState<SecurityBenchmarkResponse | null>(null);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
   const [result, setResult] = useState<ApiMutationResponse | null>(null);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -24,20 +34,35 @@ export default function OrganiserPage() {
 
   async function refresh() {
     try {
-      const [sRes, aRes] = await Promise.all([
+      const [sRes, aRes, secRes] = await Promise.all([
         fetch('/api/status', { cache: 'no-store' }),
         fetch('/api/organiser/alerts', { cache: 'no-store' }),
+        fetch('/api/security/status', { cache: 'no-store' }),
       ]);
       const sJson = (await sRes.json()) as DemoStatusResponse & { error?: string };
       const aJson = (await aRes.json()) as AlertsPayload;
+      const secJson = (await secRes.json()) as SecurityStatusResponse;
       if (!sRes.ok || sJson.ok === false) {
         throw new Error(sJson.error || 'Could not load chain state.');
       }
       setStatus(sJson);
       setAlertsData(aJson);
+      if (secRes.ok && secJson.ok) setSecurityStatus(secJson);
       setStatusError('');
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : 'Could not load organiser state.');
+    }
+  }
+
+  async function runBenchmark() {
+    if (benchmarkBusy) return;
+    setBenchmarkBusy(true);
+    try {
+      const r = await fetch('/api/security/benchmark', { cache: 'no-store' });
+      const data = (await r.json()) as SecurityBenchmarkResponse;
+      setBenchmark(data);
+    } finally {
+      setBenchmarkBusy(false);
     }
   }
 
@@ -539,6 +564,106 @@ export default function OrganiserPage() {
           </ul>
         ) : (
           <p>No suspicious activity signals recorded in the current activity log.</p>
+        )}
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Hybrid Anti-Bot &amp; ML Intelligence</h2>
+          <button className="secondary" disabled={benchmarkBusy} onClick={() => void runBenchmark()}>
+            {benchmarkBusy ? 'Running IBM Benchmark…' : 'Run IBM Baseline vs. Protected Benchmark'}
+          </button>
+        </div>
+        <div className="metrics-grid">
+          <div className="metric">
+            <span>Supervised ML Model</span>
+            <strong>{securityStatus?.mlModel?.version || 'Not loaded'}</strong>
+            <small>
+              {securityStatus?.mlModel?.validationMetrics
+                ? `ROC-AUC ${securityStatus.mlModel.validationMetrics.heldOutRocAuc ?? '—'} · Prec ${securityStatus.mlModel.validationMetrics.heldOutPrecision ?? '—'}`
+                : 'Iliou HTTP log classifier'}
+            </small>
+          </div>
+          <div className="metric">
+            <span>Unsupervised Human Baseline</span>
+            <strong>
+              {securityStatus?.humanBaseline
+                ? `${securityStatus.humanBaseline.sampleCount.toLocaleString()} sessions`
+                : 'Default'}
+            </strong>
+            <small>{securityStatus?.humanBaseline?.source || 'Welford online learner'}</small>
+          </div>
+          <div className="metric">
+            <span>Recorded Security Events</span>
+            <strong>{securityStatus?.recentEventsCount ?? 0}</strong>
+            <small>Cumulative `security-events.ndjson`</small>
+          </div>
+        </div>
+
+        {benchmark?.ibmTargets && (
+          <div style={{ marginTop: 16 }}>
+            <div className="metrics-grid">
+              <div className="metric">
+                <span>Legitimate Tickets Acquired</span>
+                <strong>
+                  {benchmark.baseline?.legitimateTicketsAcquired ?? 0} →{' '}
+                  {benchmark.protected?.legitimateTicketsAcquired ?? 0} /{' '}
+                  {benchmark.protected?.legitimateParticipantsTotal ?? 80}
+                </strong>
+                <small>Baseline → Protected (+{benchmark.deltas?.legitimateFanTicketsGained ?? 0})</small>
+              </div>
+              <div className="metric">
+                <span>Shared-Wi-Fi Disrupted</span>
+                <strong>
+                  {benchmark.protected?.sharedWifiFlagged ?? 0} / {benchmark.protected?.sharedWifiTotal ?? 15}
+                </strong>
+                <small>Zero blanket IP blocking</small>
+              </div>
+              <div className="metric">
+                <span>Malicious Flagged (TP)</span>
+                <strong>
+                  {benchmark.protected?.maliciousFlaggedTruePositives ?? 0} /{' '}
+                  {benchmark.protected?.maliciousParticipantsTotal ?? 0}
+                </strong>
+                <small>Precision: {benchmark.protected?.classification?.precision ?? 1}</small>
+              </div>
+              <div className="metric">
+                <span>Unauthorized / Oversold</span>
+                <strong>
+                  {benchmark.protected?.unauthorizedCheckoutsSucceeded ?? 0} /{' '}
+                  {benchmark.protected?.oversoldTickets ?? 0}
+                </strong>
+                <small>Baseline unauthorized: {benchmark.baseline?.unauthorizedCheckoutsSucceeded ?? 0}</small>
+              </div>
+            </div>
+
+            <div className="table-wrap" style={{ marginTop: 12 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>IBM Target</th>
+                    <th>Expected</th>
+                    <th>Observed</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {benchmark.ibmTargets.map((row) => (
+                    <tr key={row.target}>
+                      <td><strong>{row.target}</strong></td>
+                      <td>{row.expected}</td>
+                      <td>{row.observed}</td>
+                      <td>
+                        <span className={`pill ${row.passed ? 'ok' : 'danger'}`}>
+                          {row.passed ? 'PASS' : 'FAIL'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
       </section>
 

@@ -3,24 +3,33 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { describeAllocation } from '@/lib/allocation';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
-import type { AdminLogsResponse, DemoStatusResponse, RoleId } from '@/lib/types';
+import type {
+  AdminLogsResponse,
+  DemoStatusResponse,
+  RoleId,
+  SecurityStatusResponse,
+} from '@/lib/types';
 
 export default function AdminPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [adminLogs, setAdminLogs] = useState<AdminLogsResponse | null>(null);
+  const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
   const [error, setError] = useState('');
 
   async function refresh() {
     try {
-      const [sRes, lRes] = await Promise.all([
+      const [sRes, lRes, secRes] = await Promise.all([
         fetch('/api/status', { cache: 'no-store' }),
         fetch('/api/admin/logs', { cache: 'no-store' }),
+        fetch('/api/security/status', { cache: 'no-store' }),
       ]);
       const sJson = (await sRes.json()) as DemoStatusResponse & { error?: string };
       const lJson = (await lRes.json()) as AdminLogsResponse;
+      const secJson = (await secRes.json()) as SecurityStatusResponse;
       if (!sRes.ok || sJson.ok === false) throw new Error(sJson.error || 'Could not load chain state.');
       setStatus(sJson);
       setAdminLogs(lJson);
+      if (secRes.ok && secJson.ok) setSecurityStatus(secJson);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load admin telemetry.');
@@ -286,6 +295,58 @@ export default function AdminPage() {
           </div>
         ) : (
           <p>Loading role accounts…</p>
+        )}
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Security Engine &amp; ML Telemetry</h2>
+          <span className="pill ok">{securityStatus?.recentEventsCount ?? 0} cumulative events</span>
+        </div>
+        <div className="metrics-grid">
+          <div className="metric">
+            <span>Supervised ML Artifact</span>
+            <strong>{securityStatus?.mlModel?.version || 'Not loaded'}</strong>
+            <small>{securityStatus?.mlModel?.modelType || 'l2_logistic_regression_behavioral'}</small>
+          </div>
+          <div className="metric">
+            <span>Unsupervised Baseline</span>
+            <strong>
+              {securityStatus?.humanBaseline
+                ? `${securityStatus.humanBaseline.sampleCount.toLocaleString()} sessions`
+                : 'Default'}
+            </strong>
+            <small>{securityStatus?.humanBaseline?.source || 'Welford online calibration'}</small>
+          </div>
+        </div>
+        {securityStatus && securityStatus.recentEvents.length > 0 && (
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Event Type</th>
+                  <th>Account</th>
+                  <th>Session</th>
+                  <th>Sale</th>
+                </tr>
+              </thead>
+              <tbody>
+                {securityStatus.recentEvents.slice(0, 10).map((ev, idx) => {
+                  const ctx = (ev.eventContext as Record<string, unknown> | undefined) || {};
+                  return (
+                    <tr key={`${String(ev.eventId ?? idx)}`}>
+                      <td>{ev.timestamp ? new Date(String(ev.timestamp)).toLocaleTimeString() : '—'}</td>
+                      <td><code>{String(ev.eventType ?? 'UNKNOWN')}</code></td>
+                      <td><code>{String(ev.accountId ?? '—')}</code></td>
+                      <td><code>{String(ev.sessionId ?? '—')}</code></td>
+                      <td><code>{String(ctx.eventSaleId ?? '—')}</code></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
