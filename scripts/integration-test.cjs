@@ -51,6 +51,13 @@ function postJson(base, route, body) {
   }).then(async (response) => ({ status: response.status, body: await response.json() }));
 }
 
+async function clickUiAction(page, label, endpoint) {
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith(`/api/${endpoint}`) && response.request().method() === 'POST');
+  await page.getByRole('button', { name: label }).click();
+  const response = await responsePromise;
+  return { status: response.status(), body: await response.json() };
+}
+
 async function waitForPage(base, proc, logs) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
@@ -275,7 +282,67 @@ async function main() {
     const codeAfterReset = await anvil.rpc('eth_getCode', [deployed.contract, 'latest']);
     check(codeAfterReset !== '0x', 'demo reset does not erase the live chain contract');
 
-    process.stdout.write('\nIntegration summary: all web/API lifecycle, recovery, money, and restart checks passed.\n');
+    const uiDeployment = await cliJson(['init-demo', '--rpc', anvil.endpoint, '--capacity', '1', '--entry-window', '120', '--claim-window', '300', '--resale-window', '300', '--gate-window', '600', '--face-price', facePrice.toString()], stateDir);
+    check(uiDeployment.ok && uiDeployment.contract !== deployed.contract, 'fresh local deployment created for a full browser journey');
+    const journeyContext = await browser.newContext();
+    const journey = await journeyContext.newPage();
+    await journey.goto(`${server.base}/fan`);
+
+    await journey.getByLabel('Active demo role').selectOption('fanA');
+    await journey.getByLabel('Demo subject').fill('ui-e2e-fan-a');
+    let uiResult = await clickUiAction(journey, 'Enter event', 'enter');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'browser journey registers Fan A');
+    await journey.getByLabel('Active demo role').selectOption('fanB');
+    await journey.getByLabel('Demo subject').fill('ui-e2e-fan-b');
+    uiResult = await clickUiAction(journey, 'Enter event', 'enter');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'browser journey registers Fan B');
+
+    await journey.goto(`${server.base}/organiser`);
+    uiResult = await clickUiAction(journey, 'Close entry and lock draw', 'organiser/advance-and-lock');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'organiser closes entry from the browser');
+    uiResult = await clickUiAction(journey, 'Run draw', 'organiser/draw');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'organiser draws from the browser');
+    const uiStatus = await (await fetch(`${server.base}/api/status`, { cache: 'no-store' })).json();
+    const uiWinner = uiStatus.winners[0].toLowerCase();
+    const uiSeller = Object.entries(uiStatus.roles).find(([, account]) => account.address.toLowerCase() === uiWinner)?.[0];
+    assert.ok(uiSeller === 'fanA' || uiSeller === 'fanB', 'browser journey winner must resolve to a demo fan');
+    const uiBuyer = uiSeller === 'fanA' ? 'fanB' : 'fanA';
+    const uiSellerLabel = uiSeller === 'fanA' ? 'Fan A' : 'Fan B';
+    const uiBuyerLabel = uiBuyer === 'fanA' ? 'Fan A' : 'Fan B';
+
+    await journey.goto(`${server.base}/fan`);
+    await journey.getByLabel('Active demo role').selectOption(uiSeller);
+    uiResult = await clickUiAction(journey, 'Claim reserved ticket', 'claim');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'winner claims the ticket from the browser');
+    uiResult = await clickUiAction(journey, 'Sign and save credential', 'credential/sign');
+    check(uiResult.status === 200 && uiResult.body.credential.version === 1, 'seller saves a browser v1 gate credential');
+    await cliJson(['advance-time', '--seconds', '301'], stateDir);
+    await journey.getByLabel('Price in wei').fill(resalePrice.toString());
+    uiResult = await clickUiAction(journey, 'List for resale', 'list');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'seller lists the ticket from the browser');
+    await journey.getByLabel('Active demo role').selectOption(uiBuyer);
+    uiResult = await clickUiAction(journey, 'Buy listing', 'buy');
+    check(uiResult.status === 200 && uiResult.body.txStatus === 'confirmed', 'buyer completes the resale from the browser');
+    await journey.getByLabel('Ticket version').fill('2');
+    uiResult = await clickUiAction(journey, 'Sign and save credential', 'credential/sign');
+    check(uiResult.status === 200 && uiResult.body.credential.version === 2, 'buyer saves a browser v2 gate credential');
+    await cliJson(['advance-time', '--seconds', '301'], stateDir);
+
+    await journey.goto(`${server.base}/gate`);
+    const savedCredentials = journey.getByLabel('Saved credential');
+    await savedCredentials.selectOption({ label: `${uiSellerLabel} · v1` });
+    uiResult = await clickUiAction(journey, 'Verify and redeem', 'gate/redeem');
+    check(uiResult.status === 409 && uiResult.body.errorCode === 'STALE_CREDENTIAL', 'gate rejects the seller v1 credential in the browser');
+    await savedCredentials.selectOption({ label: `${uiBuyerLabel} · v2` });
+    uiResult = await clickUiAction(journey, 'Verify and redeem', 'gate/redeem');
+    check(uiResult.status === 200 && uiResult.body.gateDecision === 'ADMIT' && uiResult.body.txStatus === 'confirmed', 'gate admits the buyer v2 credential in the browser');
+    uiResult = await clickUiAction(journey, 'Verify and redeem', 'gate/redeem');
+    check(uiResult.status === 409 && uiResult.body.txStatus === 'rejected', 'gate rejects a second browser scan');
+    const uiFinalStatus = await (await fetch(`${server.base}/api/status`, { cache: 'no-store' })).json();
+    check(uiFinalStatus.admittedCount === 1 && uiFinalStatus.tickets[0].owner.toLowerCase() === uiFinalStatus.roles[uiBuyer].address.toLowerCase(), 'full browser lifecycle reconciles owner and admission with chain state');
+    await journeyContext.close();
+
+    process.stdout.write('\nIntegration summary: all browser, web/API lifecycle, recovery, money, and restart checks passed.\n');
   } finally {
     if (browser) await browser.close();
     if (server) await stopChild(server.proc);

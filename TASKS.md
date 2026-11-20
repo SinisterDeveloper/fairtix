@@ -261,7 +261,7 @@ web/
 - **Dev 2 (Next.js Backend & Frontend):**
   - [x] **L4-D2-1 (9–11h):** Automated clean deployment/API boot, browser role and credential-tray persistence across refresh and server restart, and disconnect/resume recovery coverage passes.
   - [x] **L4-D2-2 (11–13h):** Froze the UI/API feature set after the role-action guard and automated browser/API integration coverage passed.
-  - [ ] **L4-D2-3 (13–15h):** Rehearse Fan A, Fan B, Organiser, and Gate demo click-path without resetting the judging chain.
+  - [x] **L4-D2-3 (13–15h):** Added an automated Playwright rehearsal for both fan roles, Organiser, and Gate on an isolated Anvil deployment; it preserves the judging chain and verifies each browser outcome against API/chain state.
 
 ---
 

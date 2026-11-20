@@ -8,7 +8,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:integration": "node ../src/compile.cjs && npm run build && node ../scripts/integration-test.cjs",
+    "test:integration": "playwright install chromium && node ../src/compile.cjs && npm run build && node ../scripts/integration-test.cjs",
     "test:contract": "node ../src/benchmarks.cjs",
     "test:demo": "node ../src/demo.cjs",
     "test:volume": "node ../src/volume-fairtickets.cjs 100000",
