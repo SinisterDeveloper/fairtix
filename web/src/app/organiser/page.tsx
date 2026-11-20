@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { formatUnixTime, formatWeiToEth, shortAddress } from '@/lib/format';
 import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
@@ -76,22 +77,42 @@ export default function OrganiserPage() {
       <p className="eyebrow">ORGANISER CONSOLE</p>
       <h1>Event operations</h1>
 
-      <div className="toolbar">
-        <div className="actions" style={{ margin: 0 }}>
-          <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
-            Close entry and lock draw
-          </button>
-          <button disabled={busy} onClick={() => void act('organiser/draw')}>
-            Run draw
-          </button>
-          <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
-            Withdraw proceeds
+      <LifecycleStepper phase={status?.phase} context="organiser" />
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Organiser controls (run in order)</h2>
+          <button className="secondary" onClick={() => void refresh()}>
+            Refresh evidence
           </button>
         </div>
-        <button className="secondary" onClick={() => void refresh()}>
-          Refresh evidence
-        </button>
-      </div>
+        <div className="step-actions">
+          <div className="step-action">
+            <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
+              Close entry and lock draw
+            </button>
+            <small className="meta">
+              1. Advances past entry deadline and locks a future block hash for randomness.
+            </small>
+          </div>
+          <div className="step-action">
+            <button disabled={busy} onClick={() => void act('organiser/draw')}>
+              Run draw
+            </button>
+            <small className="meta">
+              2. Mines 2 blocks and selects winners fairly from unique entrants.
+            </small>
+          </div>
+          <div className="step-action">
+            <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
+              Withdraw proceeds
+            </button>
+            <small className="meta">
+              3. Transfers accrued primary-sale proceeds to the organiser wallet.
+            </small>
+          </div>
+        </div>
+      </section>
 
       {statusError && (
         <p className="role-warning" role="alert">

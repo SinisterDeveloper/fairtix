@@ -1,7 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
+import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
-import { shortAddress } from '@/lib/format';
+import { explainErrorCode, formatUnixTime, shortAddress } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse } from '@/lib/types';
 
 export default function GatePage() {
@@ -89,13 +90,19 @@ export default function GatePage() {
     }
   }
 
-  const credentialSlot = (() => {
+  const parsedCred = (() => {
     try {
-      return Number(JSON.parse(credential).slot);
+      return JSON.parse(credential) as Record<string, unknown>;
     } catch {
-      return 0;
+      return null;
     }
   })();
+  const credentialSlot = parsedCred && parsedCred.slot !== undefined ? Number(parsedCred.slot) : 0;
+  const credentialVersion =
+    parsedCred && parsedCred.version !== undefined ? Number(parsedCred.version) : null;
+  const credentialExpiry =
+    parsedCred && parsedCred.expiry !== undefined ? Number(parsedCred.expiry) : null;
+
   const currentTicket = status?.tickets.find((t) => t.slot === credentialSlot);
   const ownerRole = currentTicket
     ? Object.values(status?.roles || {}).find(
@@ -103,10 +110,23 @@ export default function GatePage() {
       )
     : undefined;
 
+  const isStalePreview =
+    currentTicket && credentialVersion !== null && credentialVersion < currentTicket.version;
+
+  const decisionKind = !result
+    ? null
+    : result.txStatus === 'unknown_recovering' || result.txStatus === 'pending'
+      ? 'hold'
+      : result.gateDecision === 'ADMIT' || result.txStatus === 'confirmed'
+        ? 'admit'
+        : 'reject';
+
   return (
     <main className="page">
       <p className="eyebrow">VENUE GATE</p>
       <h1>Verify a ticket</h1>
+
+      <LifecycleStepper phase={status?.phase} context="gate" />
 
       {statusError && (
         <p className="role-warning" role="alert">
@@ -114,8 +134,32 @@ export default function GatePage() {
         </p>
       )}
 
+      {decisionKind && result && (
+        <section className={`gate-decision ${decisionKind}`} aria-live="polite">
+          <div className="gate-decision-head">
+            <strong>
+              {decisionKind === 'admit'
+                ? 'ADMIT — Entry Granted'
+                : decisionKind === 'hold'
+                  ? 'HOLD FOR STAFF — Confirmation Pending'
+                  : 'DENIED — Entry Rejected'}
+            </strong>
+            {result.errorCode && <code>{result.errorCode}</code>}
+          </div>
+          <p>
+            {decisionKind === 'admit'
+              ? 'The gate transaction was confirmed on-chain and this ticket is now marked admitted.'
+              : decisionKind === 'hold'
+                ? 'Receipt confirmation is unresolved. Do not re-scan—click Check / Resume below to reconcile.'
+                : explainErrorCode(result.errorCode) ||
+                  result.error ||
+                  'This pass could not be verified on-chain.'}
+          </p>
+        </section>
+      )}
+
       <section className="card narrow">
-        {tray.length > 0 && (
+        {tray.length > 0 ? (
           <label>
             Saved credential
             <select value={selected} onChange={(e) => choose(e.target.value)}>
@@ -126,7 +170,40 @@ export default function GatePage() {
               ))}
             </select>
           </label>
+        ) : (
+          <p className="meta">
+            No saved passes in browser storage yet. Sign a pass on the Fan tab or paste Credential
+            JSON below.
+          </p>
         )}
+
+        <div className="gate-compare">
+          <div>
+            <span className="meta">Presented pass</span>
+            <strong>
+              {parsedCred && parsedCred.slot !== undefined
+                ? `Slot #${credentialSlot} · v${credentialVersion ?? '?'}`
+                : 'No pass loaded'}
+            </strong>
+            {credentialExpiry ? (
+              <small className="meta">Expires: {formatUnixTime(credentialExpiry)}</small>
+            ) : null}
+            {isStalePreview && (
+              <span className="pill warn">Stale version (ticket is now v{currentTicket?.version})</span>
+            )}
+          </div>
+          <div>
+            <span className="meta">Live on-chain ticket</span>
+            <strong>
+              {currentTicket
+                ? `${ownerRole ? `${ownerRole.label} · ` : ''}${shortAddress(currentTicket.owner)} · v${currentTicket.version}`
+                : 'Not issued'}
+            </strong>
+            <small className="meta">
+              Phase: {status?.phase || '—'} · Admitted: {currentTicket?.admitted ? 'Yes' : 'No'}
+            </small>
+          </div>
+        </div>
 
         <label>
           Credential JSON
@@ -136,26 +213,6 @@ export default function GatePage() {
             onChange={(e) => setCredential(e.target.value)}
           />
         </label>
-
-        <div className="gate-chain-meta">
-          <span>
-            Phase: <strong>{status?.phase || '—'}</strong>
-          </span>
-          <span>
-            Chain owner:{' '}
-            <strong>
-              {currentTicket
-                ? `${ownerRole ? `${ownerRole.label} · ` : ''}${shortAddress(currentTicket.owner)}`
-                : '—'}
-            </strong>
-          </span>
-          <span>
-            Version: <strong>{currentTicket ? `v${currentTicket.version}` : '—'}</strong>
-          </span>
-          <span>
-            Admitted: <strong>{currentTicket?.admitted ? 'Yes' : 'No'}</strong>
-          </span>
-        </div>
 
         <label>
           Scan ID
