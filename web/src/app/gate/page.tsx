@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { explainErrorCode, formatUnixTime, shortAddress } from '@/lib/format';
@@ -14,14 +15,16 @@ export default function GatePage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
+  const autoPickedRef = useRef(false);
 
   useEffect(() => {
+    let loadedTray: Array<Record<string, unknown>> = [];
     try {
       const saved = localStorage.getItem('fairtickets-credentials');
       if (saved) {
-        const values = JSON.parse(saved);
-        setTray(values);
-        setCredential(JSON.stringify(values[0] || {}, null, 2));
+        loadedTray = JSON.parse(saved);
+        setTray(loadedTray);
+        setCredential(JSON.stringify(loadedTray[0] || {}, null, 2));
       }
     } catch {
       localStorage.removeItem('fairtickets-credentials');
@@ -34,6 +37,17 @@ export default function GatePage() {
         if (!r.ok || data.ok === false) throw new Error(data.error || 'Could not load chain state.');
         setStatus(data);
         setStatusError('');
+        if (!autoPickedRef.current && data.contract && loadedTray.length > 0) {
+          const currentIdx = [...loadedTray]
+            .reverse()
+            .findIndex((c) => String(c.contract || '').toLowerCase() === data.contract.toLowerCase());
+          if (currentIdx >= 0) {
+            const actualIdx = loadedTray.length - 1 - currentIdx;
+            setSelected(String(actualIdx));
+            setCredential(JSON.stringify(loadedTray[actualIdx] || {}, null, 2));
+          }
+          autoPickedRef.current = true;
+        }
       } catch (error) {
         setStatusError(error instanceof Error ? error.message : 'Could not load chain state.');
       }
@@ -46,6 +60,16 @@ export default function GatePage() {
   function choose(index: string) {
     setSelected(index);
     setCredential(JSON.stringify(tray[Number(index)] || {}, null, 2));
+  }
+
+  function clearOldPasses() {
+    if (!status?.contract) return;
+    const currentContract = status.contract.toLowerCase();
+    const filtered = tray.filter((c) => String(c.contract || '').toLowerCase() === currentContract);
+    setTray(filtered);
+    localStorage.setItem('fairtickets-credentials', JSON.stringify(filtered));
+    setSelected('0');
+    setCredential(JSON.stringify(filtered[0] || {}, null, 2));
   }
 
   async function redeem() {
@@ -112,6 +136,15 @@ export default function GatePage() {
 
   const isStalePreview =
     currentTicket && credentialVersion !== null && credentialVersion < currentTicket.version;
+  const isOldContract = Boolean(
+    status?.contract &&
+      parsedCred?.contract &&
+      String(parsedCred.contract).toLowerCase() !== status.contract.toLowerCase(),
+  );
+  const hasOldPasses = Boolean(
+    status?.contract &&
+      tray.some((c) => c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase()),
+  );
 
   const decisionKind = !result
     ? null
@@ -123,8 +156,17 @@ export default function GatePage() {
 
   return (
     <main className="page">
-      <p className="eyebrow">VENUE GATE</p>
-      <h1>Verify a ticket</h1>
+      <div className="card-head">
+        <div>
+          <p className="eyebrow">ZONE 2 · ORGANISER &amp; GATE</p>
+          <h1>Verify a ticket</h1>
+        </div>
+        <div className="actions" style={{ margin: 0 }}>
+          <Link className="button secondary" href="/organiser">
+            ← Back to Organiser
+          </Link>
+        </div>
+      </div>
 
       <LifecycleStepper phase={status?.phase} context="gate" />
 
@@ -132,6 +174,26 @@ export default function GatePage() {
         <p className="role-warning" role="alert">
           {statusError}
         </p>
+      )}
+
+      {status && !currentTicket && parsedCred?.slot !== undefined && (
+        <div className="role-warning" role="status">
+          Slot #{credentialSlot} has <strong>not been claimed yet</strong> on-chain (<code>Not issued</code>).
+          A reserved fan must claim the ticket during the <strong>CLAIM</strong> phase before it can
+          be verified at the gate.
+        </div>
+      )}
+
+      {status && status.phase !== 'GATE' && (
+        <div className="flow-callout">
+          <span>
+            Current phase is <strong>{status.phase}</strong>. Gate admission opens in the{' '}
+            <strong>GATE</strong> phase.
+          </span>
+          <Link className="small-link" href="/organiser">
+            Advance phase on Organiser →
+          </Link>
+        </div>
       )}
 
       {decisionKind && result && (
@@ -160,16 +222,33 @@ export default function GatePage() {
 
       <section className="card narrow">
         {tray.length > 0 ? (
-          <label>
-            Saved credential
-            <select value={selected} onChange={(e) => choose(e.target.value)}>
-              {tray.map((c, i) => (
-                <option key={i} value={i}>
-                  {String(c.label || `Credential ${i + 1}`)}
-                </option>
-              ))}
-            </select>
-          </label>
+          <>
+            <label>
+              Saved credential
+              <select value={selected} onChange={(e) => choose(e.target.value)}>
+                {tray.map((c, i) => {
+                  const isOld = Boolean(
+                    status?.contract &&
+                      c.contract &&
+                      String(c.contract).toLowerCase() !== status.contract.toLowerCase(),
+                  );
+                  return (
+                    <option key={i} value={i}>
+                      {String(c.label || `Credential ${i + 1}`)}
+                      {isOld ? ' (Old event)' : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+            {hasOldPasses && (
+              <div className="preset-row">
+                <button type="button" className="secondary small-btn" onClick={clearOldPasses}>
+                  Clear old-event passes
+                </button>
+              </div>
+            )}
+          </>
         ) : (
           <p className="meta">
             No saved passes in browser storage yet. Sign a pass on the Fan tab or paste Credential
@@ -188,6 +267,9 @@ export default function GatePage() {
             {credentialExpiry ? (
               <small className="meta">Expires: {formatUnixTime(credentialExpiry)}</small>
             ) : null}
+            {isOldContract && (
+              <span className="pill warn">Old event contract (will reject as FORGED_CREDENTIAL)</span>
+            )}
             {isStalePreview && (
               <span className="pill warn">Stale version (ticket is now v{currentTicket?.version})</span>
             )}

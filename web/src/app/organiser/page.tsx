@@ -1,12 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { describeAllocation } from '@/lib/allocation';
+import { DEFAULT_EVENT_META, loadEventMeta, saveEventMeta } from '@/lib/event-meta';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
 import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
-type AlertsPayload = { ok?: boolean; alerts?: AlertItem[]; error?: string };
+type AlertsPayload = { ok?: boolean; alerts?: AlertItem[]; activityCount?: number; error?: string };
 
 export default function OrganiserPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
@@ -14,6 +16,11 @@ export default function OrganiserPage() {
   const [result, setResult] = useState<ApiMutationResponse | null>(null);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [eventTitle, setEventTitle] = useState(DEFAULT_EVENT_META.title);
+  const [eventVenue, setEventVenue] = useState(DEFAULT_EVENT_META.venue);
+  const [newCapacity, setNewCapacity] = useState('2');
+  const [newQueueSeconds, setNewQueueSeconds] = useState('600');
+  const [newPriceInr, setNewPriceInr] = useState('3000');
 
   async function refresh() {
     try {
@@ -35,10 +42,37 @@ export default function OrganiserPage() {
   }
 
   useEffect(() => {
+    const meta = loadEventMeta();
+    setEventTitle(meta.title);
+    setEventVenue(meta.venue);
     void refresh();
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
   }, []);
+
+  async function createEvent() {
+    setBusy(true);
+    try {
+      saveEventMeta({
+        title: eventTitle.trim() || DEFAULT_EVENT_META.title,
+        venue: eventVenue.trim() || DEFAULT_EVENT_META.venue,
+        dateLabel: 'Live Event',
+      });
+      const r = await fetch('/api/organiser/create-event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          capacity: Number(newCapacity),
+          entryWindowSeconds: Number(newQueueSeconds),
+          facePriceInr: Number(newPriceInr),
+        }),
+      });
+      setResult((await r.json()) as ApiMutationResponse);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function act(endpoint: string, body: Record<string, unknown> = {}) {
     setBusy(true);
@@ -73,13 +107,136 @@ export default function OrganiserPage() {
   const reconciled = status ? contractBalanceWei === totalCreditsWei : false;
   const alerts = Array.isArray(alertsData?.alerts) ? alertsData.alerts : [];
   const allocationInfo = describeAllocation(status);
+  const phase = status?.phase?.toUpperCase() || '';
+  const activeStep = !status
+    ? 0
+    : phase.includes('ENTRY') || (phase.includes('DRAW') && !status.drawLocked)
+      ? 1
+      : phase.includes('DRAW') && status.drawLocked && !status.drawn
+        ? 2
+        : phase.includes('CLAIM') || phase.includes('RESALE')
+          ? 3
+          : phase.includes('GATE') || phase.includes('CLOSED')
+            ? 4
+            : 0;
+  const nextPhaseHint = phase.includes('CLAIM')
+    ? status?.issuedCount === 0
+      ? '0 tickets claimed yet — have a reserved fan claim on /fan before advancing to RESALE!'
+      : 'Currently in CLAIM → click to open RESALE'
+    : phase.includes('RESALE')
+      ? 'Currently in RESALE → click to open GATE'
+      : '3. Fast-forwards the demo clock (Claim → Resale → Gate).';
 
   return (
     <main className="page">
-      <p className="eyebrow">ORGANISER CONSOLE</p>
-      <h1>Event operations</h1>
+      <div className="card-head">
+        <div>
+          <p className="eyebrow">ZONE 2 · ORGANISER &amp; GATE</p>
+          <h1>Event operations &amp; live telemetry</h1>
+        </div>
+        <div className="actions" style={{ margin: 0 }}>
+          <Link className="button secondary" href="/gate">
+            Open Gate Scanner
+          </Link>
+          <Link className="button secondary" href="/admin">
+            Admin Backend Logs →
+          </Link>
+        </div>
+      </div>
 
       <LifecycleStepper phase={status?.phase} context="organiser" />
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Create new event &amp; launch booking queue</h2>
+          <span className="pill">Replaces current demo event</span>
+        </div>
+        <div className="inline-fields">
+          <label>
+            Event name
+            <input value={eventTitle} disabled={busy} onChange={(e) => setEventTitle(e.target.value)} />
+          </label>
+          <label>
+            Venue
+            <input value={eventVenue} disabled={busy} onChange={(e) => setEventVenue(e.target.value)} />
+          </label>
+        </div>
+        <div className="metrics-grid">
+          <label>
+            Total tickets (capacity)
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={newCapacity}
+              disabled={busy}
+              onChange={(e) => setNewCapacity(e.target.value)}
+            />
+          </label>
+          <label>
+            Queue window (seconds)
+            <input
+              type="number"
+              min={30}
+              max={86400}
+              value={newQueueSeconds}
+              disabled={busy}
+              onChange={(e) => setNewQueueSeconds(e.target.value)}
+            />
+          </label>
+          <label>
+            Ticket price (INR)
+            <input
+              type="number"
+              min={100}
+              value={newPriceInr}
+              disabled={busy}
+              onChange={(e) => setNewPriceInr(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="actions" style={{ marginTop: 8, marginBottom: 0 }}>
+          <button disabled={busy} className="secondary" onClick={() => void createEvent()}>
+            {busy ? 'Creating event…' : 'Create event & open queue'}
+          </button>
+        </div>
+      </section>
+
+      {status && (
+        <section className="card">
+          <div className="card-head">
+            <h2>Live command summary</h2>
+            <span className="pill ok">Phase: {status.phase}</span>
+          </div>
+          <div className="metrics-grid">
+            <div className="metric">
+              <span>Phase</span>
+              <strong>{status.phase}</strong>
+            </div>
+            <div className="metric">
+              <span>Capacity</span>
+              <strong>{status.capacity}</strong>
+            </div>
+            <div className="metric">
+              <span>Eligible entries</span>
+              <strong>{status.entrantsCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Allocations</span>
+              <strong>{status.winnersCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Claims</span>
+              <strong>{status.issuedCount}</strong>
+            </div>
+            <div className="metric">
+              <span>Review alerts</span>
+              <strong>{alerts.length}</strong>
+              <small>{alertsData?.activityCount ?? 0} logged events</small>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <div className="card-head">
@@ -89,8 +246,12 @@ export default function OrganiserPage() {
           </button>
         </div>
         <div className="step-actions">
-          <div className="step-action">
-            <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
+          <div className={`step-action ${activeStep === 1 ? 'step-action-active' : ''}`}>
+            <button
+              disabled={busy}
+              className={activeStep === 1 ? '' : 'secondary'}
+              onClick={() => void act('organiser/advance-and-lock')}
+            >
               Close entry and lock allocation
             </button>
             <small className="meta">
@@ -98,8 +259,12 @@ export default function OrganiserPage() {
               an oversubscribed batch needs a lottery).
             </small>
           </div>
-          <div className="step-action">
-            <button disabled={busy} onClick={() => void act('organiser/draw')}>
+          <div className={`step-action ${activeStep === 2 ? 'step-action-active' : ''}`}>
+            <button
+              disabled={busy}
+              className={activeStep === 2 ? '' : 'secondary'}
+              onClick={() => void act('organiser/draw')}
+            >
               Finalize reservations
             </button>
             <small className="meta">
@@ -107,20 +272,22 @@ export default function OrganiserPage() {
               legacy editions).
             </small>
           </div>
-          <div className="step-action">
+          <div className={`step-action ${activeStep === 3 ? 'step-action-active' : ''}`}>
             <button
               disabled={busy}
-              className="secondary"
+              className={activeStep === 3 ? '' : 'secondary'}
               onClick={() => void act('organiser/advance-time', { seconds: 301 })}
             >
               Advance to next phase (+5m)
             </button>
-            <small className="meta">
-              3. Fast-forwards the demo clock (Claim → Resale → Gate).
-            </small>
+            <small className="meta">{nextPhaseHint}</small>
           </div>
-          <div className="step-action">
-            <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
+          <div className={`step-action ${activeStep === 4 ? 'step-action-active' : ''}`}>
+            <button
+              disabled={busy}
+              className={activeStep === 4 ? '' : 'secondary'}
+              onClick={() => void act('withdraw')}
+            >
               Withdraw proceeds
             </button>
             <small className="meta">
@@ -349,7 +516,9 @@ export default function OrganiserPage() {
       <section className="card">
         <div className="card-head">
           <h2>Suspicious activity</h2>
-          <span className="pill warn">Review signal only — does not auto-block</span>
+          <span className="pill warn">
+            Review signal only ({alertsData?.activityCount ?? 0} events) — does not auto-block
+          </span>
         </div>
         {alerts.length > 0 ? (
           <ul className="alert-list">
@@ -358,7 +527,9 @@ export default function OrganiserPage() {
                 <div className="alert-item-head">
                   <strong>{alert.rule}</strong>
                   <span className="pill">Count: {alert.count}</span>
-                  <code>{alert.subjectOrSlot}</code>
+                  {alert.grouping && <span className="pill">{alert.grouping}</span>}
+                  {alert.windowSeconds && <span className="meta">{alert.windowSeconds}s window</span>}
+                  <code>{alert.subjectLabel || alert.subjectOrSlot}</code>
                   <span className="meta">{new Date(alert.timestamp).toLocaleTimeString()}</span>
                 </div>
                 <p>{alert.reason}</p>

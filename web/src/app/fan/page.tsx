@@ -4,7 +4,8 @@ import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { describeAllocation } from '@/lib/allocation';
-import { formatWeiToInr, inrToWei, shortAddress } from '@/lib/format';
+import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
+import { formatWeiToInr, inrToWei } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export default function FanPage() {
@@ -17,23 +18,27 @@ export default function FanPage() {
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [tray, setTray] = useState<Array<Record<string, unknown>>>([]);
   const [enteredByContract, setEnteredByContract] = useState<Record<string, Record<string, { blockNumber?: number | null }>>>({});
+  const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
   const isFan = role === 'fanA' || role === 'fanB';
 
-  async function refresh() {
+  async function refresh(): Promise<DemoStatusResponse | null> {
     try {
       const r = await fetch('/api/status', { cache: 'no-store' });
       const data = await r.json();
       if (!r.ok || data.ok === false) throw new Error(data.error || 'Could not load chain state.');
       setStatus(data);
       setStatusError('');
+      return data as DemoStatusResponse;
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : 'Could not load chain state.');
+      return null;
     }
   }
 
   useEffect(() => {
+    setEventMeta(loadEventMeta());
     void refresh();
     const id = setInterval(refresh, 3000);
     try {
@@ -41,6 +46,12 @@ export default function FanPage() {
       if (saved) setTray(JSON.parse(saved));
     } catch {
       localStorage.removeItem('fairtickets-credentials');
+    }
+    try {
+      const savedEntered = localStorage.getItem('fairtickets-entered');
+      if (savedEntered) setEnteredByContract(JSON.parse(savedEntered));
+    } catch {
+      localStorage.removeItem('fairtickets-entered');
     }
     const onRole = (e: Event) => {
       const next = (e as CustomEvent<RoleId>).detail;
@@ -69,17 +80,24 @@ export default function FanPage() {
       });
       const data = (await r.json()) as ApiMutationResponse;
       setMessage(data);
-      if (endpoint === 'enter' && data.txStatus === 'confirmed' && status?.contract) {
-        const contractKey = status.contract.toLowerCase();
-        setEnteredByContract((prev) => ({
-          ...prev,
-          [contractKey]: {
-            ...(prev[contractKey] || {}),
-            [role]: { blockNumber: data.blockNumber ?? null },
-          },
-        }));
+      const latestStatus = await refresh();
+      const contractAddr = latestStatus?.contract || status?.contract;
+      if (endpoint === 'enter' && data.txStatus === 'confirmed' && contractAddr) {
+        const contractKey = contractAddr.toLowerCase();
+        setEnteredByContract((prev) => {
+          const next = {
+            ...prev,
+            [contractKey]: {
+              ...(prev[contractKey] || {}),
+              [role]: { blockNumber: data.blockNumber ?? null },
+            },
+          };
+          try {
+            localStorage.setItem('fairtickets-entered', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
       }
-      await refresh();
     } finally {
       setBusy(false);
     }
@@ -88,7 +106,8 @@ export default function FanPage() {
   async function credential() {
     setBusy(true);
     try {
-      const expirySeconds = status?.resaleCutoff ? status.resaleCutoff + 60 : undefined;
+      const inGate = status?.phase?.toUpperCase().includes('GATE');
+      const expirySeconds = !inGate && status?.resaleCutoff ? status.resaleCutoff + 60 : undefined;
       const r = await fetch('/api/credential/sign', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -129,10 +148,20 @@ export default function FanPage() {
   const allocationInfo = describeAllocation(status);
   const enteredInfo = status?.contract ? enteredByContract[status.contract.toLowerCase()]?.[role] : undefined;
 
+  useEffect(() => {
+    if (heldTicket) {
+      setSlot(String(heldTicket.slot));
+      setVersion(String(heldTicket.version));
+    } else if (activeListings.length > 0) {
+      setSlot(String(activeListings[0].slot));
+      setVersion(String(activeListings[0].version));
+    }
+  }, [role, heldTicket?.slot, heldTicket?.version, activeListings[0]?.slot, activeListings[0]?.version]);
+
   const fanQueueStatus = !status
-    ? 'Loading chain state…'
+    ? 'Loading bookings…'
     : heldTicket
-      ? `Holds slot #${heldTicket.slot} (v${heldTicket.version}${heldTicket.admitted ? ', admitted' : ''})`
+      ? `Confirmed booking · Seat #${heldTicket.slot} (Pass v${heldTicket.version}${heldTicket.admitted ? ', checked in' : ''})`
       : isWinner
         ? 'Reservation available to claim'
         : status.drawn
@@ -140,39 +169,159 @@ export default function FanPage() {
           : status.drawLocked
             ? 'Allocation pending'
             : enteredInfo
-              ? `Entry confirmed${enteredInfo.blockNumber ? ` (mined in block #${enteredInfo.blockNumber})` : ''}`
+              ? 'Entry confirmed'
               : 'Not yet entered';
+
+  const friendlyStage = !status
+    ? 'Connecting'
+    : phase.includes('ENTRY')
+      ? 'Queue Open'
+      : phase.includes('DRAW')
+        ? 'Finalizing Reservations'
+        : phase.includes('CLAIM')
+          ? 'Claim Open'
+          : phase.includes('RESALE')
+            ? 'Resale Open'
+            : phase.includes('GATE')
+              ? 'Doors Open'
+              : 'Event Ended';
 
   return (
     <main className="page">
-      <p className="eyebrow">FAN CONSOLE</p>
-      <h1>Your ticket journey</h1>
+      <p className="eyebrow">USER ZONE · FAN BOOKINGS</p>
+      <h1>Upcoming Shows &amp; Tickets</h1>
+
+      <section aria-label="Upcoming shows">
+        <div className="card-head" style={{ marginBottom: 8 }}>
+          <h2>Upcoming shows</h2>
+          <span className="meta">Live booking powered by FairTickets</span>
+        </div>
+        <div className="shows-grid">
+          <article className="show-card live">
+            <div>
+              <div className="card-head" style={{ marginBottom: 8 }}>
+                <span className="pill ok">{friendlyStage}</span>
+                {status && <span className="meta">Phase: {status.phase}</span>}
+              </div>
+              <h3>{eventMeta.title}</h3>
+              <p className="show-meta">
+                {eventMeta.venue} · {eventMeta.dateLabel}
+              </p>
+            </div>
+            <div className="show-footer">
+              <strong>
+                {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '₹3,000'}
+              </strong>
+              <span className="meta">
+                {status ? `${status.issuedCount}/${status.capacity} booked` : 'Loading…'}
+              </span>
+            </div>
+          </article>
+
+          <article className="show-card">
+            <div>
+              <div className="card-head" style={{ marginBottom: 8 }}>
+                <span className="pill">Coming Soon</span>
+              </div>
+              <h3>AR Rahman — Live in Concert</h3>
+              <p className="show-meta">Jio World Garden, Mumbai · Next Month</p>
+            </div>
+            <div className="show-footer">
+              <strong>₹2,500</strong>
+              <span className="meta">Queue opens soon</span>
+            </div>
+          </article>
+
+          <article className="show-card">
+            <div>
+              <div className="card-head" style={{ marginBottom: 8 }}>
+                <span className="pill">Coming Soon</span>
+              </div>
+              <h3>Sunburn Arena — Electronic Night</h3>
+              <p className="show-meta">Mahalaxmi Racecourse, Mumbai · Upcoming</p>
+            </div>
+            <div className="show-footer">
+              <strong>₹1,800</strong>
+              <span className="meta">Queue opens soon</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section className="status-strip" aria-label="Your ticket status">
+        <div>
+          <span>Active fan</span>
+          <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
+        </div>
+        <div>
+          <span>Event phase</span>
+          <strong>{status ? `${status.phase} (${friendlyStage})` : 'Connecting…'}</strong>
+        </div>
+        <div>
+          <span>Your booking status</span>
+          <strong>{isFan ? fanQueueStatus : 'Select Fan A or Fan B'}</strong>
+        </div>
+        <div>
+          <span>Tickets booked · Credit</span>
+          <strong>
+            {status ? `${status.issuedCount}/${status.capacity}` : '—'} ·{' '}
+            {status ? formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr) : '₹0'}
+          </strong>
+        </div>
+        <div style={{ alignSelf: 'center', justifySelf: 'end' }}>
+          <button className="secondary" onClick={() => void refresh()}>
+            Refresh bookings
+          </button>
+        </div>
+      </section>
 
       <LifecycleStepper phase={status?.phase} context="fan" />
-
-      <div className="toolbar">
-        <div className="toolbar-meta">
-          <span>
-            Acting as{' '}
-            <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
-          </span>
-          {status && <span className="pill">{status.phase}</span>}
-          {isFan && status && (
-            <span className="meta">
-              {fanQueueStatus}
-              {' · '}Withdrawable: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
-            </span>
-          )}
-        </div>
-        <button className="secondary" onClick={() => void refresh()}>
-          Refresh chain state
-        </button>
-      </div>
 
       {!isFan && (
         <p className="role-warning" role="status">
           Choose Fan A or Fan B in the role selector to use fan actions.
         </p>
+      )}
+      {isFan && status && (
+        <div className="flow-callout">
+          <span>
+            {phase.includes('ENTRY')
+              ? enteredInfo
+                ? 'Entry confirmed in queue. Switch to the other fan to enter, or open Organiser to close entry.'
+                : 'Entry is open — click "Enter event" below to join the ticket queue.'
+              : phase.includes('DRAW')
+                ? 'Entry is closed. Go to Organiser to lock allocation and finalize reservations.'
+                : phase.includes('CLAIM')
+                  ? isWinner && !heldTicket
+                    ? 'You have a reservation! Click "Claim reserved ticket" below.'
+                    : heldTicket
+                      ? 'Ticket claimed! Sign a v1 gate pass now, or advance to Resale on Organiser.'
+                      : 'No reservation for this role. Switch to the reserved fan or advance to Resale.'
+                  : phase.includes('RESALE')
+                    ? heldTicket && !heldTicket.listed
+                      ? 'You hold a ticket — test 120% (rejected) or list at 80%/100% for resale.'
+                      : !heldTicket && activeListings.length > 0
+                        ? 'A resale listing is live! Click "Buy listing" to purchase at the capped price.'
+                        : heldTicket
+                          ? 'Ticket listed or updated — sign a gate pass for your current version, then advance to Gate.'
+                          : 'Resale window is open.'
+                    : phase.includes('GATE')
+                      ? heldTicket
+                        ? 'Venue Gate is open! Sign a pass for your current version, then open Gate to redeem.'
+                        : 'Venue Gate is open — take a saved pass to the Gate tab.'
+                      : 'Event closed. Withdraw any remaining proceeds below.'}
+          </span>
+          {(phase.includes('DRAW') || (phase.includes('CLAIM') && heldTicket) || (phase.includes('RESALE') && heldTicket)) && (
+            <Link className="small-link" href="/organiser">
+              Open Organiser →
+            </Link>
+          )}
+          {phase.includes('GATE') && (
+            <Link className="small-link" href="/gate">
+              Open Gate Scanner →
+            </Link>
+          )}
+        </div>
       )}
       {statusError && (
         <p className="role-warning" role="alert">
@@ -330,12 +479,16 @@ export default function FanPage() {
           )}
 
           <div className="actions">
-            <button disabled={!isFan || busy} onClick={() => void act('claim')}>
+            <button
+              disabled={!isFan || busy}
+              className={phase.includes('CLAIM') && isWinner && !heldTicket ? '' : 'secondary'}
+              onClick={() => void act('claim')}
+            >
               Claim reserved ticket
             </button>
             <button
               disabled={!isFan || busy}
-              className="secondary"
+              className={phase.includes('RESALE') && heldTicket && !heldTicket.listed ? '' : 'secondary'}
               onClick={() =>
                 void act('list', {
                   slot: Number(slot),
@@ -348,7 +501,7 @@ export default function FanPage() {
             </button>
             <button
               disabled={!isFan || busy}
-              className="secondary"
+              className={phase.includes('RESALE') && !heldTicket && activeListings.length > 0 ? '' : 'secondary'}
               onClick={() =>
                 void act('buy', {
                   slot: Number(slot),
@@ -414,6 +567,25 @@ export default function FanPage() {
                 })}
               </ul>
               <div className="preset-row" style={{ marginTop: 10 }}>
+                {status?.contract &&
+                  tray.some(
+                    (c) => c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase(),
+                  ) && (
+                    <button
+                      type="button"
+                      className="secondary small-btn"
+                      onClick={() => {
+                        const filtered = tray.filter(
+                          (c) =>
+                            String(c.contract || '').toLowerCase() === status.contract.toLowerCase(),
+                        );
+                        setTray(filtered);
+                        localStorage.setItem('fairtickets-credentials', JSON.stringify(filtered));
+                      }}
+                    >
+                      Clear old-event passes
+                    </button>
+                  )}
                 <button
                   type="button"
                   className="secondary small-btn"
@@ -432,7 +604,7 @@ export default function FanPage() {
         </article>
       </section>
 
-      <StatePanel status={status} message={message} />
+      <StatePanel status={status} />
     </main>
   );
 }
@@ -440,18 +612,17 @@ export default function FanPage() {
 function resolveRoleLabel(status: DemoStatusResponse, address: string): string {
   const lower = address.toLowerCase();
   const entry = Object.values(status.roles || {}).find((r) => r.address.toLowerCase() === lower);
-  return entry ? `${entry.label} (${shortAddress(address)})` : shortAddress(address);
+  return entry ? entry.label : 'Guest';
 }
 
-function StatePanel({ status, message }: { status: DemoStatusResponse | null; message: unknown }) {
+function StatePanel({ status }: { status: DemoStatusResponse | null }) {
   return (
     <section className="card state">
       <div className="card-head">
-        <h2>On-chain tickets</h2>
+        <h2>Current Bookings</h2>
         {status && (
           <span className="meta">
-            {status.phase} · {status.entrantsCount} entrants · {status.issuedCount}/{status.capacity}{' '}
-            issued · {status.admittedCount} admitted
+            {status.issuedCount}/{status.capacity} booked · {status.admittedCount} checked in
           </span>
         )}
       </div>
@@ -461,21 +632,19 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
           <table>
             <thead>
               <tr>
-                <th>Slot</th>
-                <th>Owner</th>
-                <th>Version</th>
+                <th>Seat / Slot</th>
+                <th>Holder</th>
+                <th>Pass Version</th>
                 <th>Paid Price</th>
-                <th>Listing</th>
-                <th>Admitted</th>
+                <th>Resale Listing</th>
+                <th>Checked In</th>
               </tr>
             </thead>
             <tbody>
               {status.tickets.map((t) => (
                 <tr key={t.slot}>
                   <td>#{t.slot}</td>
-                  <td>
-                    <code title={t.owner}>{resolveRoleLabel(status, t.owner)}</code>
-                  </td>
+                  <td>{resolveRoleLabel(status, t.owner)}</td>
                   <td>v{t.version}</td>
                   <td>{formatWeiToInr(t.paidPriceWei, status.facePriceWei, status.facePriceInr)}</td>
                   <td>
@@ -490,24 +659,8 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
           </table>
         </div>
       ) : (
-        <p>{status ? 'No tickets issued yet.' : 'Loading chain state…'}</p>
+        <p>{status ? 'No bookings confirmed yet.' : 'Loading bookings…'}</p>
       )}
-
-      <details style={{ marginTop: 14 }}>
-        <summary>Raw state &amp; last action JSON</summary>
-        <pre>
-          {JSON.stringify(
-            {
-              contract: status?.contract,
-              codeHash: status?.codeHash,
-              tickets: status?.tickets,
-              lastAction: message,
-            },
-            null,
-            2,
-          )}
-        </pre>
-      </details>
     </section>
   );
 }

@@ -21,7 +21,15 @@ export default function TxStatusBanner({
         : status === 'confirmed'
           ? 'Confirmed'
           : 'Rejected';
-  const explanation = status === 'confirmed' ? null : explainErrorCode(result.errorCode);
+  const rawError = (result.error || '').toLowerCase();
+  const explanation =
+    status === 'confirmed'
+      ? null
+      : rawError.includes('not ticket owner')
+        ? 'Only the current holder of that seat/slot can list or sign a pass for it. Switch to the holder or click "Use my ticket".'
+        : rawError.includes('already holds ticket')
+          ? 'This fan already holds a ticket. Only a fan without a ticket can buy a resale listing.'
+          : explainErrorCode(result.errorCode);
   const canResume = (status === 'unknown_recovering' || status === 'pending') && Boolean(onResume);
 
   return (

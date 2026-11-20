@@ -39,5 +39,20 @@ details summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)
 .gate-compare{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;border-radius:10px;background:#f5f7f5;margin:12px 0}
 .gate-compare>div{display:grid;gap:4px;font-size:13px}
 .step-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
-.step-action{display:grid;gap:8px;align-content:start}
-@media(max-width:760px){.stepper,.role-cards,.step-actions,.gate-compare,.inline-fields{grid-template-columns:1fr}}
+.step-action{display:grid;gap:8px;align-content:start;padding:12px;border-radius:10px;border:1px solid transparent}
+.step-action-active{border-color:var(--green);background:#f4faf6}
+.step-link{display:grid;gap:2px}
+.step:hover{border-color:var(--green)}
+nav a.nav-active{color:var(--green);border-bottom:2px solid var(--green);padding-bottom:4px}
+.flow-callout{margin:12px 0;padding:12px 14px;border-radius:10px;border:1px solid #c6dfd2;background:#f4faf6;font-size:13px;color:var(--ink);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.shows-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:12px 0 20px}
+.show-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:8px;align-content:space-between}
+.show-card.live{border-color:var(--green);box-shadow:0 8px 24px #176c5212}
+.show-card h3{margin:0;font-size:17px;font-family:'Trebuchet MS',Arial,sans-serif}
+.show-meta{margin:0;font-size:13px;color:var(--muted)}
+.show-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px;border-top:1px solid var(--line);font-size:13px}
+.status-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;padding:16px;border-radius:14px;background:#fff;border:1px solid var(--line);margin:14px 0}
+.status-strip>div{display:grid;gap:4px}
+.status-strip span{font-size:12px;color:var(--muted)}
+.status-strip strong{font-size:16px}
+@media(max-width:760px){.stepper,.role-cards,.step-actions,.gate-compare,.inline-fields,.shows-grid{grid-template-columns:1fr}}
