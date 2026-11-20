@@ -220,9 +220,9 @@ web/
 > **Exit State (Hour 5 Mentor Checkpoint):** Clean, demo-ready UI proving contract enforcement: role separation, resale cap failure, stale-credential rejection, duplicate scan rejection, honest tx states, and restart-safe chain state.
 
 - **Dev 1 (Core / Blockchain):**
-- [x] **L2-D1-1:** Added explicit `reset-demo`; `init-demo` refuses an existing state and `status` is read-only.
-- [x] **L2-D1-2:** Added normalized JSON transaction states, revert reason recovery, common error codes, and `unknown_recovering` for RPC/timeout errors.
-  - [ ] **L2-D1-3:** Verify via CLI: above-cap `list` fails, seller `v1` credential rejected after `buy`, duplicate `redeem` rejected.
+  - [x] **L2-D1-1:** Added explicit `reset-demo`; `init-demo` refuses an existing state (and clears activity log on reset), `status` validates bytecode & is strictly read-only, and demo state persists across fresh process spawns (verified in `src/verify-loop2.cjs`).
+  - [x] **L2-D1-2:** Hardened normalized JSON transaction states, ABI revert reason decoding, strict error-code classification, UUID `scanId` normalization, honest `pending`/`unknown_recovering` handling, and mempool timeout recovery via `resume` (verified in `src/verify-loop2.cjs`).
+  - [x] **L2-D1-3:** Verified via CLI (`src/verify-loop2.cjs` — 127 checks, `src/verify-loop1.cjs`, `src/demo.cjs`, and `src/benchmarks.cjs` 7/7): above-cap `list` fails (`RESALE_CAP_EXCEEDED`), seller `v1` credential rejected after `buy` (`STALE_CREDENTIAL`), forged/expired/wrong-phase credentials rejected, and duplicate/concurrent `redeem` calls admit at most once (`ALREADY_ADMITTED`).
 
 - **Dev 2 (Next.js Backend & Frontend):**
 - [x] **L2-D2-1:** Added a shared role switcher, address badge, and demo-key disclosure in the app layout.
