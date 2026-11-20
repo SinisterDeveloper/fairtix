@@ -1,6 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
+import { describeAllocation } from '@/lib/allocation';
 import { formatWeiToInr, inrToWei, shortAddress } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
@@ -13,6 +16,7 @@ export default function FanPage() {
   const [price, setPrice] = useState('2400');
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [tray, setTray] = useState<Array<Record<string, unknown>>>([]);
+  const [enteredByContract, setEnteredByContract] = useState<Record<string, Record<string, { blockNumber?: number | null }>>>({});
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
   const isFan = role === 'fanA' || role === 'fanB';
@@ -63,7 +67,18 @@ export default function FanPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ role, ...body }),
       });
-      setMessage(await r.json());
+      const data = (await r.json()) as ApiMutationResponse;
+      setMessage(data);
+      if (endpoint === 'enter' && data.txStatus === 'confirmed' && status?.contract) {
+        const contractKey = status.contract.toLowerCase();
+        setEnteredByContract((prev) => ({
+          ...prev,
+          [contractKey]: {
+            ...(prev[contractKey] || {}),
+            [role]: { blockNumber: data.blockNumber ?? null },
+          },
+        }));
+      }
       await refresh();
     } finally {
       setBusy(false);
@@ -99,29 +114,52 @@ export default function FanPage() {
     }
   }
 
+  function applyPriceRatio(numerator: number, denominator: number) {
+    const baseInr = status?.facePriceInr || 3000;
+    const val = Math.round((baseInr * numerator) / denominator);
+    setPrice(String(val));
+  }
+
   const activeAccount = status?.roles?.[role];
   const activeAddr = activeAccount?.address?.toLowerCase() || '';
   const isWinner = Boolean(activeAddr && status?.winners?.some((w) => w.toLowerCase() === activeAddr));
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
+  const activeListings = status?.tickets?.filter((t) => t.listed) || [];
+  const phase = status?.phase?.toUpperCase() || '';
+  const allocationInfo = describeAllocation(status);
+  const enteredInfo = status?.contract ? enteredByContract[status.contract.toLowerCase()]?.[role] : undefined;
+
+  const fanQueueStatus = !status
+    ? 'Loading chain state…'
+    : heldTicket
+      ? `Holds slot #${heldTicket.slot} (v${heldTicket.version}${heldTicket.admitted ? ', admitted' : ''})`
+      : isWinner
+        ? 'Reservation available to claim'
+        : status.drawn
+          ? 'No reservation after finalization'
+          : status.drawLocked
+            ? 'Allocation pending'
+            : enteredInfo
+              ? `Entry confirmed${enteredInfo.blockNumber ? ` (mined in block #${enteredInfo.blockNumber})` : ''}`
+              : 'Not yet entered';
 
   return (
     <main className="page">
       <p className="eyebrow">FAN CONSOLE</p>
       <h1>Your ticket journey</h1>
 
+      <LifecycleStepper phase={status?.phase} context="fan" />
+
       <div className="toolbar">
         <div className="toolbar-meta">
           <span>
-            Acting as <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
+            Acting as{' '}
+            <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
           </span>
           {status && <span className="pill">{status.phase}</span>}
           {isFan && status && (
             <span className="meta">
-              {heldTicket
-                ? `Holds slot #${heldTicket.slot} (v${heldTicket.version}${heldTicket.admitted ? ', admitted' : ''})`
-                : isWinner
-                  ? 'Selected in draw (unclaimed)'
-                  : 'No ticket held'}
+              {fanQueueStatus}
               {' · '}Withdrawable: {formatWeiToInr(activeAccount?.withdrawableWei, status?.facePriceWei, status?.facePriceInr)}
             </span>
           )}
@@ -149,8 +187,31 @@ export default function FanPage() {
       />
 
       <section className="grid">
-        <article className="card">
-          <h2>Register for the draw</h2>
+        <article className={`card ${phase.includes('ENTRY') ? 'card-active' : ''}`}>
+          <div className="card-head">
+            <h2>1. Join the ticket queue</h2>
+            {phase.includes('ENTRY') && <span className="pill ok">Active phase</span>}
+          </div>
+          <p>
+            {allocationInfo.mode === 'queue_by_entry_block' ? (
+              <>
+                Each verified person gets <strong>one queue entry</strong>. Earlier blocks get
+                priority; only a batch of entries mined in the same block that exceeds remaining
+                capacity enters a lottery. Re-submitting the same subject or wallet is rejected
+                on-chain.
+              </>
+            ) : (
+              <>
+                Each verified person gets <strong>one entry</strong>. Re-submitting the same subject
+                or wallet is rejected on-chain.
+              </>
+            )}
+          </p>
+          {isFan && status && (
+            <p className="meta">
+              Queue status: <strong>{fanQueueStatus}</strong>
+            </p>
+          )}
           <label>
             Demo subject
             <input value={subject} onChange={(e) => setSubject(e.target.value)} />
@@ -158,26 +219,116 @@ export default function FanPage() {
           <button disabled={!isFan || busy} onClick={() => void act('enter', { subject })}>
             Enter event
           </button>
-          <p>
-            Entry closes at the on-chain deadline. Duplicate subjects and wallets are rejected by the
-            contract.
-          </p>
         </article>
 
-        <article className="card">
-          <h2>Claim or trade</h2>
-          <label>
-            Slot
-            <input value={slot} onChange={(e) => setSlot(e.target.value)} />
-          </label>
-          <label>
-            Ticket version
-            <input value={version} onChange={(e) => setVersion(e.target.value)} />
-          </label>
+        <article className={`card ${phase.includes('CLAIM') || phase.includes('RESALE') ? 'card-active' : ''}`}>
+          <div className="card-head">
+            <h2>2. Claim or trade</h2>
+            {(phase.includes('CLAIM') || phase.includes('RESALE')) && (
+              <span className="pill ok">Active phase</span>
+            )}
+          </div>
+          <p>
+            Reserved fans claim at face price (
+            {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
+            ). During resale, holders can list at or below the on-chain cap.
+          </p>
+          {isFan && status && !heldTicket && (
+            <p className="meta">
+              {isWinner
+                ? 'Reservation available to claim — click "Claim reserved ticket" below.'
+                : status.drawn
+                  ? 'No reservation after finalization for this wallet.'
+                  : status.drawLocked
+                    ? 'Allocation pending — waiting for the organiser to finalize reservations.'
+                    : 'Reservations are finalized after entry closes.'}
+            </p>
+          )}
+
+          {activeListings.length > 0 && (
+            <div className="listing-box">
+              <strong>Live resale listing:</strong>
+              {activeListings.map((t) => (
+                <div key={t.slot} className="listing-row">
+                  <span>
+                    Slot #{t.slot} (v{t.version}) ·{' '}
+                    {formatWeiToInr(t.resalePriceWei, status?.facePriceWei, status?.facePriceInr)}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary small-btn"
+                    onClick={() => {
+                      setSlot(String(t.slot));
+                      setVersion(String(t.version));
+                      const inrLabel = formatWeiToInr(t.resalePriceWei, status?.facePriceWei, status?.facePriceInr).replace(/[₹,\s]/g, '');
+                      setPrice(inrLabel || '2400');
+                    }}
+                  >
+                    Fill listing
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="inline-fields">
+            <label>
+              Slot
+              <input value={slot} onChange={(e) => setSlot(e.target.value)} />
+            </label>
+            <label>
+              Ticket version
+              <input value={version} onChange={(e) => setVersion(e.target.value)} />
+            </label>
+          </div>
+
+          {heldTicket && (
+            <div className="preset-row">
+              <button
+                type="button"
+                className="secondary small-btn"
+                onClick={() => {
+                  setSlot(String(heldTicket.slot));
+                  setVersion(String(heldTicket.version));
+                }}
+              >
+                Use my ticket (Slot #{heldTicket.slot}, v{heldTicket.version})
+              </button>
+            </div>
+          )}
+
           <label>
             Resale price (INR)
             <input value={price} onChange={(e) => setPrice(e.target.value)} />
           </label>
+
+          {status && (
+            <div className="preset-row">
+              <span className="meta">Quick price:</span>
+              <button
+                type="button"
+                className="secondary small-btn"
+                onClick={() => applyPriceRatio(80, 100)}
+              >
+                80% (valid)
+              </button>
+              <button
+                type="button"
+                className="secondary small-btn"
+                onClick={() => applyPriceRatio(100, 100)}
+              >
+                Max cap (100%)
+              </button>
+              <button
+                type="button"
+                className="secondary small-btn"
+                onClick={() => applyPriceRatio(120, 100)}
+              >
+                120% (test reject)
+              </button>
+            </div>
+          )}
+
           <div className="actions">
             <button disabled={!isFan || busy} onClick={() => void act('claim')}>
               Claim reserved ticket
@@ -185,30 +336,47 @@ export default function FanPage() {
             <button
               disabled={!isFan || busy}
               className="secondary"
-              onClick={() => void act('list', { slot: Number(slot), version: Number(version), priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr) })}
+              onClick={() =>
+                void act('list', {
+                  slot: Number(slot),
+                  version: Number(version),
+                  priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                })
+              }
             >
               List for resale
             </button>
             <button
               disabled={!isFan || busy}
               className="secondary"
-              onClick={() => void act('buy', { slot: Number(slot), version: Number(version), priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr) })}
+              onClick={() =>
+                void act('buy', {
+                  slot: Number(slot),
+                  version: Number(version),
+                  priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                })
+              }
             >
               Buy listing
             </button>
           </div>
           <p>
             Max resale price:{' '}
-            <strong>{status ? formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr) : '—'}</strong>.
-            Try a higher INR amount (for example 30000) to see the cap enforced.
+            <strong>
+              {status ? formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
+            </strong>
+            . Try a higher INR amount (for example 30000) to see the cap enforced.
           </p>
         </article>
 
-        <article className="card">
-          <h2>Gate credential tray</h2>
+        <article className={`card ${phase.includes('GATE') ? 'card-active' : ''}`}>
+          <div className="card-head">
+            <h2>3. Gate passes &amp; proceeds</h2>
+            {phase.includes('GATE') && <span className="pill ok">Active phase</span>}
+          </div>
           <p>
-            Sign a short-lived credential for the selected ticket version and preserve older versions
-            for the stale credential demo.
+            Sign a short-lived gate pass for your ticket. Older passes (like <code>v1</code> after a
+            resale) stay saved so you can verify they are rejected at the gate.
           </p>
           <div className="actions" style={{ marginTop: 12 }}>
             <button disabled={!isFan || busy} onClick={() => void credential()}>
@@ -219,15 +387,47 @@ export default function FanPage() {
             </button>
           </div>
           {tray.length > 0 ? (
-            <ul>
-              {tray.map((c, i) => (
-                <li key={i}>
-                  <strong>{String(c.label)}</strong> · slot {String(c.slot)} · v{String(c.version)}
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="pass-list">
+                {tray.map((c, i) => {
+                  const isOldEvent =
+                    Boolean(status?.contract && c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase());
+                  return (
+                    <li key={i} className="pass-item">
+                      <div>
+                        <strong>{String(c.label)}</strong>
+                        <span className="meta">
+                          {' '}
+                          · Slot #{String(c.slot)} · v{String(c.version)}
+                        </span>
+                        {isOldEvent && (
+                          <span className="pill warn" style={{ marginLeft: 8 }}>
+                            Old event
+                          </span>
+                        )}
+                      </div>
+                      <Link className="small-link" href="/gate">
+                        Use at Gate →
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="preset-row" style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  onClick={() => {
+                    setTray([]);
+                    localStorage.removeItem('fairtickets-credentials');
+                  }}
+                >
+                  Clear saved passes
+                </button>
+              </div>
+            </>
           ) : (
-            <p className="meta">No saved credentials yet.</p>
+            <p className="meta">No saved passes yet. Claim or buy a ticket, then sign a pass.</p>
           )}
         </article>
       </section>
@@ -247,7 +447,7 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
   return (
     <section className="card state">
       <div className="card-head">
-        <h2>On-chain state</h2>
+        <h2>On-chain tickets</h2>
         {status && (
           <span className="meta">
             {status.phase} · {status.entrantsCount} entrants · {status.issuedCount}/{status.capacity}{' '}
@@ -278,7 +478,11 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
                   </td>
                   <td>v{t.version}</td>
                   <td>{formatWeiToInr(t.paidPriceWei, status.facePriceWei, status.facePriceInr)}</td>
-                  <td>{t.listed ? formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr) : 'Not listed'}</td>
+                  <td>
+                    {t.listed
+                      ? formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr)
+                      : 'Not listed'}
+                  </td>
                   <td>{t.admitted ? 'Yes' : 'No'}</td>
                 </tr>
               ))}
@@ -293,7 +497,12 @@ function StatePanel({ status, message }: { status: DemoStatusResponse | null; me
         <summary>Raw state &amp; last action JSON</summary>
         <pre>
           {JSON.stringify(
-            { contract: status?.contract, codeHash: status?.codeHash, tickets: status?.tickets, lastAction: message },
+            {
+              contract: status?.contract,
+              codeHash: status?.codeHash,
+              tickets: status?.tickets,
+              lastAction: message,
+            },
             null,
             2,
           )}

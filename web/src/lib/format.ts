@@ -79,7 +79,7 @@ const ERROR_EXPLANATIONS: Record<string, string> = {
   STALE_CREDENTIAL: 'This gate credential was signed for an older ticket version and was invalidated when the ticket was resold.',
   ALREADY_ADMITTED: 'This ticket or scan ID has already been admitted or finalized on-chain.',
   FORGED_CREDENTIAL: 'The signature or EIP-712 domain did not match the current ticket holder, contract, chain, or edition.',
-  NOT_WINNER: 'Only wallets selected in the draw can claim a reserved slot.',
+  NOT_WINNER: 'Only wallets with a finalized reservation can claim a reserved slot.',
   ALREADY_CLAIMED: 'This winning wallet has already claimed its reserved ticket.',
   WRONG_PHASE: 'This action is not permitted in the current on-chain event phase.',
   LISTING_NOT_ACTIVE: 'No active resale listing matches this slot, version, and expected price.',

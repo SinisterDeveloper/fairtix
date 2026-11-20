@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
+import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
+import { describeAllocation } from '@/lib/allocation';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
 import type { AlertItem, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
@@ -70,28 +72,63 @@ export default function OrganiserPage() {
   })();
   const reconciled = status ? contractBalanceWei === totalCreditsWei : false;
   const alerts = Array.isArray(alertsData?.alerts) ? alertsData.alerts : [];
+  const allocationInfo = describeAllocation(status);
 
   return (
     <main className="page">
       <p className="eyebrow">ORGANISER CONSOLE</p>
       <h1>Event operations</h1>
 
-      <div className="toolbar">
-        <div className="actions" style={{ margin: 0 }}>
-          <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
-            Close entry and lock draw
-          </button>
-          <button disabled={busy} onClick={() => void act('organiser/draw')}>
-            Run draw
-          </button>
-          <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
-            Withdraw proceeds
+      <LifecycleStepper phase={status?.phase} context="organiser" />
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Organiser controls (run in order)</h2>
+          <button className="secondary" onClick={() => void refresh()}>
+            Refresh evidence
           </button>
         </div>
-        <button className="secondary" onClick={() => void refresh()}>
-          Refresh evidence
-        </button>
-      </div>
+        <div className="step-actions">
+          <div className="step-action">
+            <button disabled={busy} onClick={() => void act('organiser/advance-and-lock')}>
+              Close entry and lock allocation
+            </button>
+            <small className="meta">
+              1. Advances past entry deadline and locks queue allocation (and a future target block if
+              an oversubscribed batch needs a lottery).
+            </small>
+          </div>
+          <div className="step-action">
+            <button disabled={busy} onClick={() => void act('organiser/draw')}>
+              Finalize reservations
+            </button>
+            <small className="meta">
+              2. Finalizes reservations (mines 2 blocks first only when a lottery is required or for
+              legacy editions).
+            </small>
+          </div>
+          <div className="step-action">
+            <button
+              disabled={busy}
+              className="secondary"
+              onClick={() => void act('organiser/advance-time', { seconds: 301 })}
+            >
+              Advance to next phase (+5m)
+            </button>
+            <small className="meta">
+              3. Fast-forwards the demo clock (Claim → Resale → Gate).
+            </small>
+          </div>
+          <div className="step-action">
+            <button disabled={busy} className="secondary" onClick={() => void act('withdraw')}>
+              Withdraw proceeds
+            </button>
+            <small className="meta">
+              4. Transfers accrued primary-sale proceeds to the organiser wallet.
+            </small>
+          </div>
+        </div>
+      </section>
 
       {statusError && (
         <p className="role-warning" role="alert">
@@ -117,7 +154,7 @@ export default function OrganiserPage() {
               <strong>{status.entrantsCount}</strong>
             </div>
             <div className="metric">
-              <span>Winners</span>
+              <span>Reserved / Winners</span>
               <strong>{status.winnersCount}</strong>
             </div>
             <div className="metric">
@@ -145,10 +182,41 @@ export default function OrganiserPage() {
           <p>Loading chain state…</p>
         )}
         {status && (
-          <p className="meta-row">
-            Claim deadline: {formatUnixTime(status.claimDeadline)} · Resale cutoff:{' '}
-            {formatUnixTime(status.resaleCutoff)} · Gate close: {formatUnixTime(status.gateClose)}
-          </p>
+          <>
+            <p className="meta-row">
+              {allocationInfo.mode === 'legacy' ? (
+                <>
+                  <strong>Allocation mode:</strong> Legacy / unknown (allocation metadata absent).
+                </>
+              ) : allocationInfo.state === 'pending_lock' ? (
+                <>
+                  <strong>Queue-first allocation:</strong> Earlier blocks get priority; only a batch
+                  of entries mined in the same block that exceeds remaining capacity is randomized.
+                  Lock allocation after entry closes to check whether a lottery is required.
+                </>
+              ) : allocationInfo.state === 'lottery_required' ? (
+                <>
+                  <strong>Lottery required (block #{allocationInfo.lotteryTargetBlock}):</strong>{' '}
+                  {allocationInfo.lotteryApplicants} eligible{' '}
+                  {allocationInfo.lotteryApplicants === 1 ? 'fan' : 'fans'} in the oversubscribed
+                  batch competing for {allocationInfo.lotterySlots} remaining{' '}
+                  {allocationInfo.lotterySlots === 1 ? 'slot' : 'slots'}. Earlier batches fit in
+                  queue order.
+                </>
+              ) : (
+                <>
+                  <strong>No lottery needed:</strong>{' '}
+                  {status.drawn
+                    ? 'Reservations were finalized in queue order.'
+                    : 'Reservations will be finalized in queue order.'}
+                </>
+              )}
+            </p>
+            <p className="meta-row">
+              Claim deadline: {formatUnixTime(status.claimDeadline)} · Resale cutoff:{' '}
+              {formatUnixTime(status.resaleCutoff)} · Gate close: {formatUnixTime(status.gateClose)}
+            </p>
+          </>
         )}
       </section>
 
@@ -194,7 +262,14 @@ export default function OrganiserPage() {
         </article>
 
         <article className="card">
-          <h2>100k volume evidence</h2>
+          <div className="card-head">
+            <h2>100k volume evidence</h2>
+            <span className="pill warn">Historical · pre-queue-first</span>
+          </div>
+          <p className="meta">
+            Historical throughput benchmark recorded prior to the queue-by-entry-block allocation
+            policy change.
+          </p>
           {status?.volumeEvidence ? (
             <dl className="kv-list">
               <div>

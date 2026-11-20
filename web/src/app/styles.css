@@ -12,3 +12,32 @@
 .tx-banner-main{flex:1;min-width:220px;display:grid;gap:4px}.tx-banner-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tx-banner-msg,.tx-banner-hint,.tx-banner-meta{margin:0;font-size:13px}.tx-banner-hint{opacity:.88}
 .gate-chain-meta{display:flex;gap:14px;flex-wrap:wrap;padding:10px 12px;border-radius:8px;background:#f5f7f5;font-size:13px;margin:10px 0}
 details summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted)}details[open] summary{margin-bottom:10px}
+.stepper-wrap{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:14px 0 20px}
+.stepper{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.step{padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:#fafbfa;display:grid;gap:2px}
+.step.active{border-color:var(--green);background:var(--mint)}.step.done{border-color:#c6dfd2;background:#f4faf6}
+.step-title{font-size:12px;font-weight:700;color:var(--ink)}.step-sub{font-size:11px;color:var(--muted)}
+.stepper-hint{margin:12px 0 0;padding:10px 12px;border-radius:9px;background:#f4f7f5;font-size:13px;color:var(--ink)}
+.hero-panel{margin-bottom:24px}.hero-lead{font-size:18px;color:var(--muted);max-width:700px;line-height:1.55}
+.role-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0}
+.guide-list{margin:0;padding-left:20px;display:grid;gap:10px;font-size:14px;color:var(--muted);line-height:1.6}
+.card-active{border-color:var(--green);box-shadow:0 8px 28px #176c5218}
+.inline-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.preset-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 12px}
+.small-btn{padding:6px 10px;font-size:12px;border-radius:7px}
+.small-link{font-size:12px;font-weight:700;color:var(--green)}
+.listing-box{padding:10px 12px;border:1px solid #c6dfd2;border-radius:10px;background:#f4faf6;margin:10px 0;font-size:13px}
+.listing-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px}
+.pass-list{list-style:none;padding:0;margin:14px 0 0;display:grid;gap:8px}
+.pass-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fafbfa;font-size:13px}
+.gate-decision{padding:16px 18px;border-radius:12px;margin:14px 0;border:1px solid var(--line)}
+.gate-decision.admit{background:#e8f4ec;border-color:#8ec7a8;color:#14543f}
+.gate-decision.reject{background:#fff0ec;border-color:#e5a99c;color:#8c3322}
+.gate-decision.hold{background:#fff6dc;border-color:#e6cb81;color:#725311}
+.gate-decision-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:18px;margin-bottom:6px}
+.gate-decision p{margin:0;font-size:14px;line-height:1.5}
+.gate-compare{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;border-radius:10px;background:#f5f7f5;margin:12px 0}
+.gate-compare>div{display:grid;gap:4px;font-size:13px}
+.step-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+.step-action{display:grid;gap:8px;align-content:start}
+@media(max-width:760px){.stepper,.role-cards,.step-actions,.gate-compare,.inline-fields{grid-template-columns:1fr}}
