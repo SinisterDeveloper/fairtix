@@ -1,0 +1,297 @@
+{
+  "generatedAt": "2026-11-20T20:53:00.051Z",
+  "simulation": true,
+  "eventSaleId": "concert_ibm_benchmark_v1",
+  "capacity": 80,
+  "knownLimitations": [
+    "Genuinely independent-looking identities without shared device, payment, session, or timing/grant anomalies cannot be linked as one person by the relationship graph.",
+    "Heuristic rule weights and thresholds (0-39 ALLOW, 40-69 CHALLENGE, 70-100 BLOCK) are starting prototype configurations rather than empirically calibrated production probabilities.",
+    "In this controlled simulation, deviceId, networkId, and paymentTokenHash are server/environment-supplied pseudonymous identifiers."
+  ],
+  "ibmTargets": [
+    {
+      "target": "Queue bypass attempt",
+      "expected": "0 unauthorized checkouts",
+      "observed": "0 / 20 unauthorized checkouts (Baseline: 20)",
+      "passed": true
+    },
+    {
+      "target": "Inventory abuse",
+      "expected": "Every expired hold releases inventory exactly once",
+      "observed": "30/30 restored once (30 duplicate release events ignored)",
+      "passed": true
+    },
+    {
+      "target": "Known linked-account farm",
+      "expected": "Detect the 50-account seeded cluster",
+      "observed": "50/50 farm accounts flagged, 0 tickets acquired",
+      "passed": true
+    },
+    {
+      "target": "Legitimate shared-network users",
+      "expected": "No blanket rejection by IP",
+      "observed": "0/15 flagged (15/15 tickets acquired)",
+      "passed": true
+    },
+    {
+      "target": "Concurrent purchases",
+      "expected": "0 oversold tickets",
+      "observed": "0 oversold (80/80 capacity sold)",
+      "passed": true
+    },
+    {
+      "target": "Risk decisions",
+      "expected": "Every action has recorded reasons and supporting events",
+      "observed": "802/802 decisions fully audited",
+      "passed": true
+    },
+    {
+      "target": "Distributed automation",
+      "expected": "Report prevented malicious allocations and remaining successful attacks",
+      "observed": "115 prevented; 5 independent stealth attacks succeeded (Baseline malicious allocations: 80)",
+      "passed": true
+    }
+  ],
+  "baseline": {
+    "protectionsEnabled": false,
+    "capacity": 80,
+    "ticketsSold": 80,
+    "oversoldTickets": 0,
+    "availableInventoryAtEnd": 0,
+    "expiredHoldsTotal": 30,
+    "exactOnceRestorations": 45,
+    "duplicateReleaseAttemptsIgnored": 30,
+    "unauthorizedBypassAttempts": 20,
+    "unauthorizedCheckoutsSucceeded": 20,
+    "totalDecisionsRecorded": 657,
+    "decisionsWithAuditReasonsOrCleanAllow": 657,
+    "legitimateParticipantsTotal": 80,
+    "legitimateFlaggedFalsePositives": 0,
+    "legitimateTicketsAcquired": 0,
+    "sharedWifiTotal": 15,
+    "sharedWifiFlagged": 0,
+    "sharedWifiTicketsAcquired": 0,
+    "maliciousParticipantsTotal": 120,
+    "maliciousFlaggedTruePositives": 0,
+    "maliciousTicketsAcquired": 80,
+    "preventedMaliciousAllocations": 40,
+    "remainingSuccessfulStealthAttacks": 0,
+    "classification": {
+      "truePositives": 0,
+      "falsePositives": 0,
+      "trueNegatives": 80,
+      "falseNegatives": 120,
+      "precision": 1,
+      "recallOverall": 0,
+      "recallLinkableAndPolicy": 0,
+      "falsePositiveRate": 0,
+      "sharedWifiFalsePositiveRate": 0
+    },
+    "groups": {
+      "inventory_hoarder_bot": {
+        "group": "inventory_hoarder_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 15,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 15
+      },
+      "queue_bypass_bot": {
+        "group": "queue_bypass_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 20,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 20
+      },
+      "account_farm": {
+        "group": "account_farm",
+        "groundTruthMalicious": true,
+        "participantsTotal": 50,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 45
+      },
+      "distributed_linked_bot": {
+        "group": "distributed_linked_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 30,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      },
+      "stealth_independent_bot": {
+        "group": "stealth_independent_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 5,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      },
+      "shared_wifi_fan": {
+        "group": "shared_wifi_fan",
+        "groundTruthMalicious": false,
+        "participantsTotal": 15,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      },
+      "family_household": {
+        "group": "family_household",
+        "groundTruthMalicious": false,
+        "participantsTotal": 2,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      },
+      "solo_fan": {
+        "group": "solo_fan",
+        "groundTruthMalicious": false,
+        "participantsTotal": 63,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 0
+      }
+    }
+  },
+  "protected": {
+    "protectionsEnabled": true,
+    "capacity": 80,
+    "ticketsSold": 80,
+    "oversoldTickets": 0,
+    "availableInventoryAtEnd": 0,
+    "expiredHoldsTotal": 30,
+    "exactOnceRestorations": 30,
+    "duplicateReleaseAttemptsIgnored": 30,
+    "unauthorizedBypassAttempts": 20,
+    "unauthorizedCheckoutsSucceeded": 0,
+    "totalDecisionsRecorded": 802,
+    "decisionsWithAuditReasonsOrCleanAllow": 802,
+    "legitimateParticipantsTotal": 80,
+    "legitimateFlaggedFalsePositives": 0,
+    "legitimateTicketsAcquired": 75,
+    "sharedWifiTotal": 15,
+    "sharedWifiFlagged": 0,
+    "sharedWifiTicketsAcquired": 15,
+    "maliciousParticipantsTotal": 120,
+    "maliciousFlaggedTruePositives": 115,
+    "maliciousTicketsAcquired": 5,
+    "preventedMaliciousAllocations": 115,
+    "remainingSuccessfulStealthAttacks": 5,
+    "classification": {
+      "truePositives": 115,
+      "falsePositives": 0,
+      "trueNegatives": 80,
+      "falseNegatives": 5,
+      "precision": 1,
+      "recallOverall": 0.9583,
+      "recallLinkableAndPolicy": 1,
+      "falsePositiveRate": 0,
+      "sharedWifiFalsePositiveRate": 0
+    },
+    "groups": {
+      "inventory_hoarder_bot": {
+        "group": "inventory_hoarder_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 15,
+        "flaggedForSecurity": 15,
+        "challengedCount": 15,
+        "blockedCount": 15,
+        "hardFailedCount": 15,
+        "ticketsAcquired": 0
+      },
+      "queue_bypass_bot": {
+        "group": "queue_bypass_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 20,
+        "flaggedForSecurity": 20,
+        "challengedCount": 0,
+        "blockedCount": 20,
+        "hardFailedCount": 20,
+        "ticketsAcquired": 0
+      },
+      "account_farm": {
+        "group": "account_farm",
+        "groundTruthMalicious": true,
+        "participantsTotal": 50,
+        "flaggedForSecurity": 50,
+        "challengedCount": 5,
+        "blockedCount": 50,
+        "hardFailedCount": 45,
+        "ticketsAcquired": 0
+      },
+      "distributed_linked_bot": {
+        "group": "distributed_linked_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 30,
+        "flaggedForSecurity": 30,
+        "challengedCount": 5,
+        "blockedCount": 30,
+        "hardFailedCount": 25,
+        "ticketsAcquired": 0
+      },
+      "stealth_independent_bot": {
+        "group": "stealth_independent_bot",
+        "groundTruthMalicious": true,
+        "participantsTotal": 5,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 5
+      },
+      "shared_wifi_fan": {
+        "group": "shared_wifi_fan",
+        "groundTruthMalicious": false,
+        "participantsTotal": 15,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 15
+      },
+      "family_household": {
+        "group": "family_household",
+        "groundTruthMalicious": false,
+        "participantsTotal": 2,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 2
+      },
+      "solo_fan": {
+        "group": "solo_fan",
+        "groundTruthMalicious": false,
+        "participantsTotal": 63,
+        "flaggedForSecurity": 0,
+        "challengedCount": 0,
+        "blockedCount": 0,
+        "hardFailedCount": 0,
+        "ticketsAcquired": 58
+      }
+    }
+  },
+  "deltas": {
+    "unauthorizedCheckoutsPrevented": 20,
+    "maliciousAllocationsReducedBy": 75,
+    "legitimateFanTicketsGained": 75,
+    "legitimateDisruptionRateProtected": 0
+  }
+}
