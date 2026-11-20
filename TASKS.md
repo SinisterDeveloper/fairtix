@@ -201,16 +201,16 @@ web/
 > **Exit State:** Ugly UI where `enter → draw → claim → list → buy → redeem` works end-to-end on Anvil. Working demo exists at Hour 2.5.
 
 - **Dev 1 (Core / Blockchain):**
-  - [ ] **L1-D1-1:** Create `artifacts/demo-fixture.json` with 5 Anvil accounts (`organiser`, `gate`, `attester`, `fanA`, `fanB`), `facePriceWei: "50000000000000000"` (`0.05 ETH`), `capacity: 2`, `entryWindow: 120`, `claimWindow: 300`, `resaleWindow: 300`, `gateWindow: 600`.
-  - [ ] **L1-D1-2:** Add `init-demo` to `src/cli.cjs`: deploys `FairTickets`, writes `artifacts/demo-state.json` (`contract`, `editionId`, `codeHash`, `chainId`, `rpcUrl`).
-  - [ ] **L1-D1-3:** Add `--role <role>` + auto-read of `artifacts/demo-state.json` to `src/cli.cjs` for `status`, `enter` (auto-attests), `lock-draw`, `draw`, `claim`, `list`, `buy`, `sign-gate`, `redeem`, `advance-time`, `mine`.
-  - [ ] **L1-D1-4:** Extend `status --json` in `src/cli.cjs` to include `tickets[]`, `winners[]`, `facePriceWei`, `maxResalePriceWei`, and `roles`.
+- [x] **L1-D1-1:** `init-demo` generates the five local Anvil role wallets with the specified fixture defaults. Private keys live in ignored `artifacts/demo-fixture.json` and are never committed.
+- [x] **L1-D1-2:** `init-demo` deploys `FairTickets` and writes address, edition, code hash, chain ID, and RPC URL to ignored `artifacts/demo-state.json`.
+- [x] **L1-D1-3:** Added role selection and automatic state loading for the lifecycle commands; role-based entry signs its demo attestation.
+- [x] **L1-D1-4:** `status --json` now reports tickets, winners, prices, role balances/credits, and available volume evidence.
 
 - **Dev 2 (Next.js Backend & Frontend):**
-  - [ ] **L1-D2-1:** Scaffold `web/` (Next.js App Router + TypeScript) and copy Section 2 into `web/src/lib/types.ts`.
-  - [ ] **L1-D2-2:** Build `web/src/lib/cli-bridge.ts` (`spawn('node', ['../src/cli.cjs', ...])`) with 15s timeout returning `unknown_recovering` (`202`) on timeout.
-  - [ ] **L1-D2-3:** Implement `GET /api/status` and happy-path `POST` routes (`/api/enter`, `/api/organiser/advance-and-lock`, `/api/organiser/draw`, `/api/claim`, `/api/list`, `/api/buy`, `/api/credential/sign`, `/api/gate/redeem`).
-  - [ ] **L1-D2-4:** Build barebones `/fan`, `/gate`, `/organiser` pages with unstyled buttons wired to those routes + raw `txHash` / `TicketState` output.
+- [x] **L1-D2-1:** Added a Next.js App Router scaffold and shared TypeScript types.
+- [x] **L1-D2-2:** Added a server-side CLI bridge with a 15-second timeout and `unknown_recovering` response.
+- [x] **L1-D2-3:** Added the status, lifecycle, credential, gate, withdrawal, resume, and alerts API routes.
+- [x] **L1-D2-4:** Added fan, gate, and organiser pages connected to the API and local chain state.
 
 **Loop 1 Sync (Hour 2.5):** Click through `enter → lock/draw → claim → list → buy → sign → redeem` on local Anvil.
 

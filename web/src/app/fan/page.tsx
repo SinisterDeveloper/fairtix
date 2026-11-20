@@ -1,0 +1,19 @@
+'use client';
+import { useEffect, useState } from 'react';
+import type { DemoStatusResponse, RoleId } from '@/lib/types';
+
+export default function FanPage() {
+  const [role, setRole] = useState<RoleId>('fanA');
+  const [status, setStatus] = useState<DemoStatusResponse | null>(null);
+  const [subject, setSubject] = useState('fan-a-subject');
+  const [slot, setSlot] = useState('1');
+  const [version, setVersion] = useState('1');
+  const [price, setPrice] = useState('180000');
+  const [message, setMessage] = useState<unknown>(null);
+  async function refresh() { const r = await fetch('/api/status', { cache: 'no-store' }); setStatus(await r.json()); }
+  useEffect(() => { void refresh(); const id = setInterval(refresh, 3000); return () => clearInterval(id); }, []);
+  async function act(endpoint: string, body: Record<string, unknown> = {}) { const r = await fetch(`/api/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role, ...body }) }); setMessage(await r.json()); await refresh(); }
+  async function credential() { const r = await fetch('/api/credential/sign', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role, slot: Number(slot), version: Number(version) }) }); const data = await r.json(); setMessage(data); if (data.credential) localStorage.setItem('fairtickets-credential', JSON.stringify(data.credential)); }
+  return <main className="page"><p className="eyebrow">FAN CONSOLE</p><h1>Your ticket journey</h1><div className="toolbar"><label>Demo role<select value={role} onChange={(e) => setRole(e.target.value as RoleId)}><option value="fanA">Fan A</option><option value="fanB">Fan B</option></select></label><button className="secondary" onClick={() => void refresh()}>Refresh chain state</button></div><section className="grid"><article className="card"><h2>Register for the draw</h2><label>Demo subject<input value={subject} onChange={(e) => setSubject(e.target.value)} /></label><button onClick={() => void act('enter', { subject })}>Enter event</button><p>Entry closes at the on-chain deadline. Duplicate subjects and wallets are rejected by the contract.</p></article><article className="card"><h2>Claim or trade</h2><label>Slot<input value={slot} onChange={(e) => setSlot(e.target.value)} /></label><label>Ticket version<input value={version} onChange={(e) => setVersion(e.target.value)} /></label><label>Price in wei<input value={price} onChange={(e) => setPrice(e.target.value)} /></label><div className="actions"><button onClick={() => void act('claim')}>Claim reserved ticket</button><button className="secondary" onClick={() => void act('list', { slot: Number(slot), version: Number(version), priceWei: price })}>List for resale</button><button className="secondary" onClick={() => void act('buy', { slot: Number(slot), version: Number(version), priceWei: price })}>Buy listing</button></div><p>Max resale price: {status?.maxResalePriceWei ?? '—'} wei. Try a higher value to see the contract enforce the cap.</p></article><article className="card"><h2>Gate credential</h2><p>Sign a short-lived credential for the selected ticket version.</p><button onClick={() => void credential()}>Sign and save credential</button><button className="secondary" onClick={() => void act('withdraw')}>Withdraw proceeds</button></article></section><StatePanel status={status} message={message} /></main>;
+}
+function StatePanel({ status, message }: { status: DemoStatusResponse | null; message: unknown }) { return <section className="card state"><h2>On-chain state</h2><p>{status ? `${status.phase} · ${status.entrantsCount} entrants · ${status.issuedCount}/${status.capacity} issued · ${status.admittedCount} admitted` : 'Loading chain state…'}</p><pre>{JSON.stringify({ contract: status?.contract, codeHash: status?.codeHash, tickets: status?.tickets, lastAction: message }, null, 2)}</pre></section>; }

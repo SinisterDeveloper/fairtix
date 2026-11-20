@@ -1,0 +1,9 @@
+'use client';
+import { useEffect, useState } from 'react';
+export default function OrganiserPage() {
+  const [status, setStatus] = useState<Record<string, unknown> | null>(null); const [alerts, setAlerts] = useState<unknown>(null); const [result, setResult] = useState<unknown>(null);
+  async function refresh() { const [s, a] = await Promise.all([fetch('/api/status', { cache: 'no-store' }), fetch('/api/organiser/alerts', { cache: 'no-store' })]); setStatus(await s.json()); setAlerts(await a.json()); }
+  useEffect(() => { void refresh(); const id = setInterval(refresh, 3000); return () => clearInterval(id); }, []);
+  async function act(endpoint: string) { const r = await fetch(`/api/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) }); setResult(await r.json()); await refresh(); }
+  return <main className="page"><p className="eyebrow">ORGANISER CONSOLE</p><h1>Event operations</h1><div className="actions"><button onClick={() => void act('organiser/advance-and-lock')}>Close entry and lock draw</button><button onClick={() => void act('organiser/draw')}>Run draw</button><button className="secondary" onClick={() => void act('withdraw')}>Withdraw proceeds</button></div><section className="grid"><article className="card"><h2>Contract evidence</h2><pre>{JSON.stringify({ chainId: status?.chainId, contract: status?.contract, codeHash: status?.codeHash, phase: status?.phase, balanceWei: status?.balanceWei, volumeEvidence: status?.volumeEvidence, action: result }, null, 2)}</pre></article><article className="card"><h2>Role balances and credits</h2><pre>{JSON.stringify(status?.roles, null, 2)}</pre></article><article className="card"><h2>Suspicious activity</h2><p className="note">Review signal only — does not auto-block.</p><pre>{JSON.stringify(alerts, null, 2)}</pre></article></section></main>;
+}

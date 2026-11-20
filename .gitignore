@@ -2,5 +2,8 @@ node_modules/
 artifacts/journal/
 artifacts/gate-claims/
 artifacts/gate-journal.json
+artifacts/demo-fixture.json
+artifacts/demo-state.json
+artifacts/activity-log.ndjson
 artifacts/volume-manifest.ndjson.gz
 *.log

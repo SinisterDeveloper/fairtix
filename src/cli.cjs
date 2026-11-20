@@ -1,7 +1,7 @@
 const net = require('node:net');
 const { createHash } = require('node:crypto');
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync } = require('node:fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync, appendFileSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
@@ -9,6 +9,14 @@ const root = resolve(__dirname, '..');
 const artifactPath = join(root, 'artifacts', 'FairTickets.json');
 const journalDir = join(root, 'artifacts', 'journal');
 const gateClaimsDir = join(root, 'artifacts', 'gate-claims');
+const demoFixturePath = join(root, 'artifacts', 'demo-fixture.json');
+const demoStatePath = join(root, 'artifacts', 'demo-state.json');
+const activityLogPath = join(root, 'artifacts', 'activity-log.ndjson');
+
+function logActivity(event) {
+  mkdirSync(join(root, 'artifacts'), { recursive: true });
+  appendFileSync(activityLogPath, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + '\n', { mode: 0o600 });
+}
 
 function loadArtifact() {
   if (!existsSync(artifactPath)) {
@@ -273,6 +281,13 @@ async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_
   });
 
   const receipt = await waitForReceipt(rpc, txHash);
+  if (receipt.status !== '0x1') {
+    try {
+      await rpc('eth_call', [{ from: wallet.address, to: to || receipt.contractAddress, data, value: ethers.toQuantity(value) }, 'latest']);
+    } catch (err) {
+      receipt.revertReason = err.message || 'Contract execution reverted';
+    }
+  }
   await updateJournalEntry(wallet.address, txHash, {
     status: receipt.status === '0x1' ? 'CONFIRMED' : 'REVERTED',
     blockNumber: Number(BigInt(receipt.blockNumber)),
@@ -284,15 +299,104 @@ async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_
 
 async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
-  const rpcUrl = opts.rpc || 'http://127.0.0.1:8545';
-  const { rpc } = makeRpc(rpcUrl);
+  let rpcUrl = opts.rpc || 'http://127.0.0.1:8545';
+  let { rpc } = makeRpc(rpcUrl);
   const artifact = loadArtifact();
   const iface = new ethers.Interface(artifact.abi);
 
+  // Demo keys are generated locally on first init and never committed. They are only
+  // funded on the isolated Anvil chain and are not production wallet credentials.
+  if (cmd === 'init-demo') {
+    if (existsSync(demoStatePath)) throw new Error('Demo state already exists. Use reset-demo before creating a new fixture.');
+    const roles = Object.fromEntries(['organiser', 'gate', 'attester', 'fanA', 'fanB'].map((role) => {
+      const wallet = ethers.Wallet.createRandom();
+      return [role, { address: wallet.address, privateKey: wallet.privateKey }];
+    }));
+    const facePriceWei = String(opts['face-price'] || '50000000000000000');
+    const capacity = Number(opts.capacity || 2);
+    const entryWindow = Number(opts['entry-window'] || 120);
+    const claimWindow = Number(opts['claim-window'] || 300);
+    const resaleWindow = Number(opts['resale-window'] || 300);
+    const gateWindow = Number(opts['gate-window'] || 600);
+    const funding = '0x' + (10n * 10n ** 18n).toString(16);
+    await Promise.all(Object.values(roles).map((r) => rpc('anvil_setBalance', [r.address, funding])));
+    const latest = await rpc('eth_getBlockByNumber', ['latest', false]);
+    const entryDeadline = BigInt(Number(BigInt(latest.timestamp)) + entryWindow);
+    const editionId = ethers.hexlify(ethers.randomBytes(32));
+    const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
+    const tx = await factory.getDeployTransaction(roles.organiser.address, roles.attester.address, roles.gate.address,
+      BigInt(capacity), BigInt(facePriceWei), editionId, entryDeadline, BigInt(claimWindow), BigInt(resaleWindow), BigInt(gateWindow));
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet: new ethers.Wallet(roles.organiser.privateKey), to: null, data: tx.data, gasLimit: 4_000_000n, opId: 'demo-deploy' });
+    if (receipt.status !== '0x1') throw new Error(`Demo deployment reverted: ${txHash}`);
+    const codeHash = ethers.keccak256(await rpc('eth_getCode', [receipt.contractAddress, 'latest']));
+    const fixture = { roles, facePriceWei, capacity, entryWindow, claimWindow, resaleWindow, gateWindow };
+    const state = { contract: receipt.contractAddress, editionId, codeHash, chainId: Number(BigInt(await rpc('eth_chainId'))), rpcUrl };
+    writeFileSync(demoFixturePath, JSON.stringify(fixture, null, 2), { flag: 'wx', mode: 0o600 });
+    writeFileSync(demoStatePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
+    console.log(JSON.stringify({ ok: true, ...state, txHash, capacity, facePriceWei }, null, 2));
+    return;
+  }
+
+  if (cmd === 'reset-demo') {
+    // Explicit reset clears only locally persisted demo identity/state. It does not
+    // rewind the chain; init-demo deploys a fresh contract after this command.
+    for (const p of [demoStatePath, demoFixturePath]) if (existsSync(p)) unlinkSync(p);
+    console.log(JSON.stringify({ ok: true, reset: true }, null, 2));
+    return;
+  }
+
+  let fixture = null;
+  let demoState = null;
+  if (existsSync(demoFixturePath)) fixture = JSON.parse(readFileSync(demoFixturePath, 'utf8'));
+  if (existsSync(demoStatePath)) demoState = JSON.parse(readFileSync(demoStatePath, 'utf8'));
+  if (opts.role) {
+    if (!fixture || !fixture.roles[opts.role]) throw new Error(`Unknown or unavailable demo role: ${opts.role}`);
+    opts.key = opts.key || fixture.roles[opts.role].privateKey;
+    opts.contract = opts.contract || demoState?.contract;
+    opts['edition-id'] = opts['edition-id'] || demoState?.editionId;
+    opts.rpc = opts.rpc || demoState?.rpcUrl;
+  }
+  if (opts.rpc && opts.rpc !== rpcUrl) {
+    rpcUrl = opts.rpc;
+    ({ rpc } = makeRpc(rpcUrl));
+  }
+  if (demoState && !opts.contract && !['deploy'].includes(cmd)) opts.contract = demoState.contract;
+  if (demoState && !opts['edition-id']) opts['edition-id'] = demoState.editionId;
+  if (opts.json) {
+    const log = console.log.bind(console);
+    console.log = (...args) => {
+      if (args.length === 1 && typeof args[0] === 'string') {
+        try {
+          const value = JSON.parse(args[0]);
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            const status = value.status;
+            const gateDecision = value.decision;
+            if (status === '0x1' || gateDecision === 'ADMIT') value.txStatus = 'confirmed';
+            else if (status === '0x0' || gateDecision === 'REJECT') value.txStatus = 'rejected';
+            if (value.txHash) value.txHash = String(value.txHash);
+            if (value.txStatus === 'rejected') {
+              const reason = String(value.reason || '').toLowerCase();
+              value.errorCode = reason.includes('cap') ? 'RESALE_CAP_EXCEEDED'
+                : reason.includes('version mismatch') ? 'STALE_CREDENTIAL'
+                  : reason.includes('already admitted') ? 'ALREADY_ADMITTED'
+                    : reason.includes('winner') ? 'NOT_WINNER'
+                      : reason.includes('signature') || reason.includes('only gate') ? 'FORGED_CREDENTIAL'
+                        : 'WRONG_PHASE';
+              value.error = value.reason || 'The contract rejected this transaction.';
+              value.reason = value.error;
+            }
+            if (cmd !== 'alerts') logActivity({ action: cmd, role: opts.role || null, subject: cmd === 'enter' ? (opts.subject || (opts.role ? `demo-${opts.role}` : null)) : null,
+              scanId: value.scanId || opts['scan-id'] || null, success: value.txStatus !== 'rejected', txHash: value.txHash || null });
+            return log(JSON.stringify(value, null, 2));
+          }
+        } catch {}
+      }
+      return log(...args);
+    };
+  }
+
   if (!cmd || cmd === 'help') {
-    console.log(
-      'Commands: deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine'
-    );
+    console.log('Commands: init-demo, reset-demo, deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine, alerts');
     return;
   }
 
@@ -383,11 +487,39 @@ async function main() {
       provider.getBalance(opts.contract),
       provider.getCode(opts.contract),
     ]);
+    const capacity = Number(await c.capacity());
+    const winners = drawn ? await c.getWinners() : [];
+    const tickets = await Promise.all(Array.from({ length: capacity }, async (_, i) => {
+      const slot = i + 1;
+      const [owner, version, paidPriceWei, admitted] = await c.getTicket(BigInt(slot));
+      const [seller, resalePriceWei, active] = await c.getListing(BigInt(slot), BigInt(version));
+      return { slot, owner, version: Number(version), paidPriceWei: paidPriceWei.toString(), admitted, listed: active, resalePriceWei: active ? resalePriceWei.toString() : '0', seller };
+    }));
+    const roles = {};
+    if (fixture) {
+      for (const [role, account] of Object.entries(fixture.roles)) {
+        roles[role] = {
+          role,
+          label: role === 'fanA' ? 'Fan A' : role === 'fanB' ? 'Fan B' : role[0].toUpperCase() + role.slice(1),
+          address: account.address,
+          ethBalanceWei: (await provider.getBalance(account.address)).toString(),
+          withdrawableWei: (await c.proceeds(account.address)).toString(),
+        };
+      }
+    }
+    let volumeEvidence;
+    const volumeSummaryPath = join(root, 'artifacts', 'volume-summary.json');
+    if (existsSync(volumeSummaryPath)) {
+      const s = JSON.parse(readFileSync(volumeSummaryPath, 'utf8'));
+      volumeEvidence = { totalWrites: s.countedWrites?.total, writesPerSecond: s.writesPerSecond, manifestSha256: s.manifestSha256 };
+    }
     console.log(
       JSON.stringify(
         {
+          ok: true,
           chainId,
           contract: opts.contract,
+          rpcUrl,
           codeHash: ethers.keccak256(code),
           editionId,
           phase,
@@ -401,6 +533,13 @@ async function main() {
           resaleCutoff: Number(resaleCutoff),
           gateClose: Number(gateClose),
           balanceWei: balance.toString(),
+          capacity,
+          facePriceWei: (await c.facePrice()).toString(),
+          maxResalePriceWei: (await c.facePrice()).toString(),
+          winners: winners.map((w) => w.toLowerCase()),
+          tickets,
+          roles,
+          ...(volumeEvidence ? { volumeEvidence } : {}),
         },
         null,
         2
@@ -430,12 +569,20 @@ async function main() {
 
   if (cmd === 'enter') {
     const wallet = new ethers.Wallet(opts.key);
-    const subject = opts.subject.startsWith('0x') && opts.subject.length === 66
-      ? opts.subject
-      : ethers.id(opts.subject);
-    const data = iface.encodeFunctionData('enter', [subject, BigInt(opts.expiry), opts.attestation]);
+    const subjectText = opts.subject || `demo-${opts.role || wallet.address}`;
+    const subject = subjectText.startsWith('0x') && subjectText.length === 66
+      ? subjectText
+      : ethers.id(subjectText);
+    const expiry = BigInt(opts.expiry || '9999999999');
+    let attestation = opts.attestation;
+    if (!attestation && opts.role && fixture?.roles?.attester && demoState) {
+      const attester = new ethers.Wallet(fixture.roles.attester.privateKey);
+      attestation = await signAttestation(attester, Number(BigInt(await rpc('eth_chainId'))), opts.contract, opts['edition-id'], subject, wallet.address, expiry);
+    }
+    if (!attestation) throw new Error('enter requires --attestation unless a demo --role is selected.');
+    const data = iface.encodeFunctionData('enter', [subject, expiry, attestation]);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 300_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
@@ -443,7 +590,7 @@ async function main() {
     const wallet = new ethers.Wallet(opts.key);
     const data = iface.encodeFunctionData('lockDraw', []);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 200_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -451,7 +598,7 @@ async function main() {
     const wallet = new ethers.Wallet(opts.key);
     const data = iface.encodeFunctionData('draw', []);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 12_000_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
@@ -463,10 +610,10 @@ async function main() {
       wallet,
       to: opts.contract,
       data,
-      value: BigInt(opts.value),
+      value: BigInt(opts.value || fixture?.facePriceWei || 200_000),
       gasLimit: 300_000n,
     });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -474,7 +621,7 @@ async function main() {
     const wallet = new ethers.Wallet(opts.key);
     const data = iface.encodeFunctionData('list', [BigInt(opts.slot), BigInt(opts.version), BigInt(opts.price)]);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 250_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -489,7 +636,7 @@ async function main() {
       value: BigInt(opts.price),
       gasLimit: 300_000n,
     });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -503,9 +650,10 @@ async function main() {
       opts['edition-id'],
       BigInt(opts.slot),
       BigInt(opts.version),
-      BigInt(opts.expiry)
+      BigInt(opts.expiry || (Number(BigInt((await rpc('eth_getBlockByNumber', ['latest', false])).timestamp)) + 120))
     );
-    console.log(JSON.stringify({ slot: opts.slot, version: opts.version, expiry: opts.expiry, ownerSig: sig }, null, 2));
+    const expiry = opts.expiry || (Number(BigInt((await rpc('eth_getBlockByNumber', ['latest', false])).timestamp)) + 120);
+    console.log(JSON.stringify({ contract: opts.contract, editionId: opts['edition-id'], slot: Number(opts.slot), version: Number(opts.version), expiry, ownerSig: sig }, null, 2));
     return;
   }
 
@@ -529,7 +677,7 @@ async function main() {
       BigInt(opts.slot),
       BigInt(opts.version),
       BigInt(opts.expiry),
-      opts.sig,
+      opts.sig || opts['owner-sig'],
       scanId,
     ]);
     const { txHash, receipt } = await sendSignedTx({
@@ -559,7 +707,7 @@ async function main() {
         console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
         return;
       }
-      console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, scanId }, null, 2));
+    console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, reason: receipt.revertReason || null, scanId }, null, 2));
       return;
     }
 
@@ -692,7 +840,9 @@ async function main() {
       });
     }
 
-    console.log(JSON.stringify({ address, resumedCount: resumed.length, resumed }, null, 2));
+    const txStatus = resumed.some((x) => x.status === 'ACTIVE_WORKER') ? 'pending'
+      : resumed.some((x) => x.status === 'REVERTED' || x.gateDecision === 'ABORTED_BEFORE_SEND') ? 'rejected' : 'confirmed';
+    console.log(JSON.stringify({ ok: true, txStatus, txHash: resumed.find((x) => x.txHash)?.txHash || null, address, resumedCount: resumed.length, resumed }, null, 2));
     return;
   }
 
@@ -700,7 +850,7 @@ async function main() {
     const wallet = new ethers.Wallet(opts.key);
     const data = iface.encodeFunctionData('withdraw', []);
     const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 200_000n });
-    console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
+    console.log(JSON.stringify({ txHash, status: receipt.status, reason: receipt.revertReason || null }, null, 2));
     return;
   }
 
@@ -730,6 +880,27 @@ async function main() {
     return;
   }
 
+  if (cmd === 'alerts') {
+    const records = existsSync(activityLogPath)
+      ? readFileSync(activityLogPath, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    const alerts = [];
+    const entriesBySubject = new Map();
+    const failedByScan = new Map();
+    for (const row of records) {
+      if (row.action === 'enter' && row.subject) entriesBySubject.set(row.subject, (entriesBySubject.get(row.subject) || 0) + 1);
+      if (row.action === 'redeem' && row.scanId && !row.success) failedByScan.set(row.scanId, (failedByScan.get(row.scanId) || 0) + 1);
+    }
+    const timestamp = new Date().toISOString();
+    for (const [subjectOrSlot, count] of entriesBySubject) if (count >= 3) alerts.push({ id: `entry-${subjectOrSlot}`, severity: 'review', rule: 'REPEATED_ENTRY_SUBJECT', count, reason: 'The same demo subject has made repeated entry requests.', subjectOrSlot, timestamp, note: 'Review signal only; does not auto-block' });
+    for (const [subjectOrSlot, count] of failedByScan) if (count >= 2) alerts.push({ id: `scan-${subjectOrSlot}`, severity: 'review', rule: 'REPEATED_FAILED_SCAN', count, reason: 'A scan ID has repeated failed admission attempts.', subjectOrSlot, timestamp, note: 'Review signal only; does not auto-block' });
+    const now = Date.now();
+    const recent = records.filter((row) => now - Date.parse(row.timestamp) <= 10_000);
+    if (recent.length >= 5) alerts.push({ id: `burst-${Math.floor(now / 10000)}`, severity: 'review', rule: 'REQUEST_BURST', count: recent.length, reason: 'Five or more requests were recorded within ten seconds.', subjectOrSlot: 'event', timestamp, note: 'Review signal only; does not auto-block' });
+    console.log(JSON.stringify({ ok: true, alerts }, null, 2));
+    return;
+  }
+
   throw new Error(`Unknown command: ${cmd}`);
 }
 
@@ -737,7 +908,15 @@ module.exports = { withWalletLock, getWalletLockEndpoint };
 
 if (require.main === module) {
   main().catch((err) => {
-    console.error(err.message || err);
+    const parsed = parseArgs(process.argv.slice(2));
+    try { logActivity({ action: parsed.cmd, role: parsed.opts.role || null, subject: parsed.cmd === 'enter' ? (parsed.opts.subject || null) : null,
+      scanId: parsed.opts['scan-id'] || null, success: false, error: err.message || String(err) }); } catch {}
+    if (parsed.opts.json) {
+      const message = err.message || String(err);
+      const unavailable = /timeout|timed out|network|rpc|socket|fetch failed/i.test(message);
+      console.log(JSON.stringify({ ok: false, txStatus: unavailable ? 'unknown_recovering' : 'rejected', txHash: null,
+        errorCode: unavailable ? 'RPC_TIMEOUT' : 'INTERNAL_ERROR', error: message, reason: message }, null, 2));
+    } else console.error(err.message || err);
     process.exit(1);
   });
 }
