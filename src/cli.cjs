@@ -1,5 +1,5 @@
 const { join, resolve } = require('node:path');
-const { readFileSync, writeFileSync, mkdirSync, existsSync, openSync, closeSync, renameSync, unlinkSync, writeSync } = require('node:fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync, linkSync, statSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
@@ -44,33 +44,66 @@ function getWalletLockPath(address) {
   return join(journalDir, `${address.toLowerCase()}.lock`);
 }
 
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM';
+  }
+}
+
+// Atomically creates destPath with complete content via temp-write + linkSync (EEXIST if destPath exists).
+// Prevents empty/partial files if a process is killed mid-write.
+function createExclusiveFileAtomic(destPath, content) {
+  const tmpPath = `${destPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  writeFileSync(tmpPath, content);
+  try {
+    linkSync(tmpPath, destPath);
+    return true;
+  } catch (err) {
+    if (err && err.code === 'EEXIST') {
+      return false;
+    }
+    throw err;
+  } finally {
+    try { unlinkSync(tmpPath); } catch {}
+  }
+}
+
 async function withWalletLock(address, fn, timeoutMs = 10_000) {
   const lockPath = getWalletLockPath(address);
   const deadline = Date.now() + timeoutMs;
-  let fd = null;
-  while (fd === null) {
-    try {
-      fd = openSync(lockPath, 'wx');
-    } catch (err) {
-      if (err && err.code === 'EEXIST') {
-        if (Date.now() > deadline) {
-          throw new Error(`Timed out acquiring wallet lock for ${address}`);
-        }
-        await delay(15);
-        continue;
-      }
-      throw err;
+  while (true) {
+    const payload = JSON.stringify({ pid: process.pid, createdAt: Date.now() });
+    if (createExclusiveFileAtomic(lockPath, payload)) {
+      break;
     }
+    // Check if an existing lock belongs to a dead process and reclaim it safely.
+    try {
+      const st = statSync(lockPath);
+      const raw = readFileSync(lockPath, 'utf8');
+      const lockInfo = raw ? JSON.parse(raw) : {};
+      const ageMs = Date.now() - (lockInfo.createdAt || st.mtimeMs);
+      if ((lockInfo.pid && !isPidAlive(lockInfo.pid) && ageMs >= 100) || ageMs >= 30_000) {
+        const staleTmp = `${lockPath}.stale.${process.pid}.${Date.now()}`;
+        try {
+          renameSync(lockPath, staleTmp);
+          try { unlinkSync(staleTmp); } catch {}
+          continue;
+        } catch {}
+      }
+    } catch {}
+
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out acquiring wallet lock for ${address}`);
+    }
+    await delay(15);
   }
   try {
-    writeSync(fd, `${process.pid}\n`);
-    closeSync(fd);
-    fd = null;
     return await fn();
   } finally {
-    if (fd !== null) {
-      try { closeSync(fd); } catch {}
-    }
     try { unlinkSync(lockPath); } catch {}
   }
 }
@@ -120,40 +153,17 @@ function getGateFinalPath(scanId) {
 
 function claimGateScanAtomic(scanId, initialData) {
   const claimPath = getGateClaimPath(scanId);
-  let fd;
-  try {
-    fd = openSync(claimPath, 'wx');
-  } catch (err) {
-    if (err && err.code === 'EEXIST') {
-      return { claimed: false, claimPath };
-    }
-    throw err;
-  }
-  try {
-    writeSync(fd, JSON.stringify(initialData, null, 2));
-  } finally {
-    closeSync(fd);
-  }
-  return { claimed: true, claimPath };
+  const claimed = createExclusiveFileAtomic(claimPath, JSON.stringify(initialData, null, 2));
+  return { claimed, claimPath };
 }
 
 function tryFinalizeGateDecision(scanId, finalData) {
   const finalPath = getGateFinalPath(scanId);
-  let fd;
-  try {
-    fd = openSync(finalPath, 'wx');
-  } catch (err) {
-    if (err && err.code === 'EEXIST') {
-      const existing = existsSync(finalPath) ? JSON.parse(readFileSync(finalPath, 'utf8')) : null;
-      return { wonFinalization: false, existing };
-    }
-    throw err;
-  }
   const record = { ...finalData, pid: process.pid, finalizedAt: new Date().toISOString() };
-  try {
-    writeSync(fd, JSON.stringify(record, null, 2));
-  } finally {
-    closeSync(fd);
+  const wonFinalization = createExclusiveFileAtomic(finalPath, JSON.stringify(record, null, 2));
+  if (!wonFinalization) {
+    const existing = existsSync(finalPath) ? JSON.parse(readFileSync(finalPath, 'utf8')) : null;
+    return { wonFinalization: false, existing };
   }
   const claimPath = getGateClaimPath(scanId);
   if (existsSync(claimPath)) {
@@ -192,8 +202,11 @@ async function waitForReceipt(rpc, txHash, maxPolls = 60) {
   throw new Error(`Receipt timeout for ${txHash}`);
 }
 
-async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_000n, opId = null, meta = null }) {
+async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_000n, opId = null, meta = null, beforeBroadcast = null }) {
   const { txHash } = await withWalletLock(wallet.address, async () => {
+    if (beforeBroadcast) {
+      beforeBroadcast();
+    }
     const nonceHex = await rpc('eth_getTransactionCount', [wallet.address, 'pending']);
     const rpcPendingNonce = Number(BigInt(nonceHex));
     const localPendingMax = readJournal(wallet.address)
@@ -506,6 +519,11 @@ async function main() {
         slot: String(opts.slot),
         version: String(opts.version),
       },
+      beforeBroadcast: () => {
+        if (existsSync(getGateFinalPath(scanId))) {
+          throw new Error(`Scan ID ${scanId} was already finalized before broadcast.`);
+        }
+      },
     });
 
     if (receipt.status !== '0x1') {
@@ -616,18 +634,29 @@ async function main() {
       const claimPath = getGateClaimPath(scanId);
       const hasJournalEntry = entries.some((e) => e.opId === scanId || e.meta?.scanId === scanId);
       if (existsSync(claimPath) && !hasJournalEntry && !existsSync(getGateFinalPath(scanId))) {
-        const fin = tryFinalizeGateDecision(scanId, {
-          decision: 'ABORTED_BEFORE_SEND',
-          status: 'ABORTED_BEFORE_SEND',
-          resumed: true,
-        });
-        resumed.push({
-          opId: scanId,
-          txHash: null,
-          status: 'NO_TX',
-          gateDecision: fin.wonFinalization ? 'ABORTED_BEFORE_SEND' : 'ALREADY_FINALIZED',
-          wonFinalization: fin.wonFinalization,
-        });
+        const claimData = JSON.parse(readFileSync(claimPath, 'utf8'));
+        if (claimData.pid && isPidAlive(claimData.pid)) {
+          resumed.push({
+            opId: scanId,
+            txHash: null,
+            status: 'ACTIVE_WORKER',
+            gateDecision: null,
+            wonFinalization: false,
+          });
+        } else {
+          const fin = tryFinalizeGateDecision(scanId, {
+            decision: 'ABORTED_BEFORE_SEND',
+            status: 'ABORTED_BEFORE_SEND',
+            resumed: true,
+          });
+          resumed.push({
+            opId: scanId,
+            txHash: null,
+            status: 'NO_TX',
+            gateDecision: fin.wonFinalization ? 'ABORTED_BEFORE_SEND' : 'ALREADY_FINALIZED',
+            wonFinalization: fin.wonFinalization,
+          });
+        }
       }
     }
 

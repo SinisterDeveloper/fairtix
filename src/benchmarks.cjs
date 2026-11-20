@@ -1067,17 +1067,32 @@ async function benchmark7(port) {
     const admitWins = resList.filter((r) => r.resumed.some((x) => x.gateDecision === 'ADMIT' && x.wonFinalization === true));
     assert(admitWins.length === 1, `Expected exactly 1 ADMIT winner across concurrent resumes, got ${admitWins.length}`);
 
-    // Test D: Crash BEFORE journal creation (gate claim file exists, no journal entry, no final file)
+    // Test D: Pre-journal claim handling: active worker must NOT be aborted; dead worker IS aborted
     const abortedScanId = ethers.id(`cli-prejournal-${Date.now()}`);
-    writeFileSync(join(root, 'artifacts', 'gate-claims', `${abortedScanId}.json`), JSON.stringify({
-      status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotD), version: '1',
+    const preJournalClaimPath = join(root, 'artifacts', 'gate-claims', `${abortedScanId}.json`);
+    writeFileSync(preJournalClaimPath, JSON.stringify({
+      status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotD), version: '1', pid: process.pid,
     }, null, 2));
+    const { stdout: activeWorkerOut } = await execFileAsync(process.execPath, [
+      cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
+    ], { encoding: 'utf8' });
+    const aw = JSON.parse(activeWorkerOut);
+    assert(aw.resumedCount === 1 && aw.resumed[0].status === 'ACTIVE_WORKER' && aw.resumed[0].wonFinalization === false,
+      `Live starting worker must not be aborted, got ${activeWorkerOut}`);
+
+    // Now simulate that the claiming worker died (dead PID) + left a stale wallet lock
+    writeFileSync(preJournalClaimPath, JSON.stringify({
+      status: 'CLAIMED', acted: false, contract: contractAddr, slot: String(slotD), version: '1', pid: 999999,
+    }, null, 2));
+    const staleLockPath = join(root, 'artifacts', 'journal', `${gate.address.toLowerCase()}.lock`);
+    writeFileSync(staleLockPath, JSON.stringify({ pid: 999999, createdAt: Date.now() - 500 }));
+
     const { stdout: preJournalOut1 } = await execFileAsync(process.execPath, [
       cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
     ], { encoding: 'utf8' });
     const pj1 = JSON.parse(preJournalOut1);
     assert(pj1.resumedCount === 1 && pj1.resumed[0].gateDecision === 'ABORTED_BEFORE_SEND' && pj1.resumed[0].wonFinalization === true,
-      `Expected ABORTED_BEFORE_SEND, got ${preJournalOut1}`);
+      `Expected ABORTED_BEFORE_SEND after stale lock reclaim, got ${preJournalOut1}`);
     const { stdout: preJournalOut2 } = await execFileAsync(process.execPath, [
       cliPath, 'resume', '--rpc', endpoint, '--address', gate.address, '--scan-id', abortedScanId,
     ], { encoding: 'utf8' });
