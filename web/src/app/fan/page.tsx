@@ -188,65 +188,23 @@ export default function FanPage() {
 
   return (
     <main className="page">
-      <p className="eyebrow">USER ZONE · FAN BOOKINGS</p>
-      <h1>Upcoming Shows &amp; Tickets</h1>
+      <div className="zone-subnav" aria-label="User navigation">
+        <Link href="/">Shows</Link>
+        <Link href="/fan" className="active">
+          Book Tickets
+        </Link>
+        <Link href="/bookings">My Bookings</Link>
+      </div>
 
-      <section aria-label="Upcoming shows">
-        <div className="card-head" style={{ marginBottom: 8 }}>
-          <h2>Upcoming shows</h2>
-          <span className="meta">Live booking powered by FairTickets</span>
+      <div className="card-head">
+        <div>
+          <p className="eyebrow">BOOK TICKETS · {eventMeta.venue.toUpperCase()}</p>
+          <h1>{eventMeta.title}</h1>
         </div>
-        <div className="shows-grid">
-          <article className="show-card live">
-            <div>
-              <div className="card-head" style={{ marginBottom: 8 }}>
-                <span className="pill ok">{friendlyStage}</span>
-                {status && <span className="meta">Phase: {status.phase}</span>}
-              </div>
-              <h3>{eventMeta.title}</h3>
-              <p className="show-meta">
-                {eventMeta.venue} · {eventMeta.dateLabel}
-              </p>
-            </div>
-            <div className="show-footer">
-              <strong>
-                {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '₹3,000'}
-              </strong>
-              <span className="meta">
-                {status ? `${status.issuedCount}/${status.capacity} booked` : 'Loading…'}
-              </span>
-            </div>
-          </article>
-
-          <article className="show-card">
-            <div>
-              <div className="card-head" style={{ marginBottom: 8 }}>
-                <span className="pill">Coming Soon</span>
-              </div>
-              <h3>AR Rahman — Live in Concert</h3>
-              <p className="show-meta">Jio World Garden, Mumbai · Next Month</p>
-            </div>
-            <div className="show-footer">
-              <strong>₹2,500</strong>
-              <span className="meta">Queue opens soon</span>
-            </div>
-          </article>
-
-          <article className="show-card">
-            <div>
-              <div className="card-head" style={{ marginBottom: 8 }}>
-                <span className="pill">Coming Soon</span>
-              </div>
-              <h3>Sunburn Arena — Electronic Night</h3>
-              <p className="show-meta">Mahalaxmi Racecourse, Mumbai · Upcoming</p>
-            </div>
-            <div className="show-footer">
-              <strong>₹1,800</strong>
-              <span className="meta">Queue opens soon</span>
-            </div>
-          </article>
-        </div>
-      </section>
+        <Link className="button secondary small-btn" href="/bookings">
+          Manage Bookings →
+        </Link>
+      </div>
 
       <section className="status-strip" aria-label="Your ticket status">
         <div>
