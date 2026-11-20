@@ -7,6 +7,9 @@ const { ethers, makeRpc, signAttestation, signGateCredential } = require('./tool
 
 const root = resolve(__dirname, '..');
 const artifactPath = join(root, 'artifacts', 'FairTickets.json');
+const demoFixturePath = join(root, 'artifacts', 'demo-fixture.json');
+const demoStatePath = join(root, 'artifacts', 'demo-state.json');
+const volumeSummaryPath = join(root, 'artifacts', 'volume-summary.json');
 const journalDir = join(root, 'artifacts', 'journal');
 const gateClaimsDir = join(root, 'artifacts', 'gate-claims');
 
@@ -15,6 +18,46 @@ function loadArtifact() {
     throw new Error('Missing artifacts/FairTickets.json. Run `node src/compile.cjs` first.');
   }
   return JSON.parse(readFileSync(artifactPath, 'utf8'));
+}
+
+function loadDemoFixture() {
+  if (!existsSync(demoFixturePath)) return null;
+  return JSON.parse(readFileSync(demoFixturePath, 'utf8'));
+}
+
+function loadDemoState() {
+  if (!existsSync(demoStatePath)) return null;
+  return JSON.parse(readFileSync(demoStatePath, 'utf8'));
+}
+
+function saveDemoState(state) {
+  writeJsonAtomic(demoStatePath, state);
+}
+
+function resolveRoleKey(opts, fallbackRole = null) {
+  if (opts.key) return opts.key;
+  const role = opts.role || fallbackRole;
+  if (!role) throw new Error('Missing --key or --role');
+  const fixture = loadDemoFixture();
+  const entry = fixture?.roles?.[role];
+  if (!entry?.privateKey) {
+    throw new Error(`Unknown role: ${role}`);
+  }
+  return entry.privateKey;
+}
+
+function resolveContract(opts) {
+  const c = opts.contract || loadDemoState()?.contract;
+  if (!c) throw new Error('Missing --contract (and no artifacts/demo-state.json found; run init-demo first)');
+  return c;
+}
+
+function resolveEditionId(opts) {
+  return opts['edition-id'] || loadDemoState()?.editionId || null;
+}
+
+function resolveRpcUrl(opts) {
+  return opts.rpc || loadDemoState()?.rpcUrl || loadDemoFixture()?.rpcUrl || 'http://127.0.0.1:8545';
 }
 
 function parseArgs(argv) {
@@ -282,17 +325,256 @@ async function sendSignedTx({ rpc, wallet, to, data, value = 0n, gasLimit = 500_
   return { txHash, receipt };
 }
 
+function mapErrorToCode(message = '') {
+  const m = String(message);
+  if (m.includes('Price exceeds cap')) return 'RESALE_CAP_EXCEEDED';
+  if (m.includes('Version mismatch') || m.includes('Invalid expiry')) return 'STALE_CREDENTIAL';
+  if (m.includes('Invalid owner signature')) return 'FORGED_CREDENTIAL';
+  if (m.includes('Already admitted')) return 'ALREADY_ADMITTED';
+  if (m.includes('Not a winner') || m.includes('Not ticket owner')) return 'NOT_WINNER';
+  if (m.includes('Already claimed')) return 'ALREADY_CLAIMED';
+  if (m.includes('Listing not active')) return 'LISTING_NOT_ACTIVE';
+  if (m.includes('Incorrect payment')) return 'INSUFFICIENT_PAYMENT';
+  if (m.includes('window') || m.includes('Entry closed') || m.includes('Not drawn')) return 'WRONG_PHASE';
+  if (m.includes('Receipt timeout') || m.includes('ECONNRESET') || m.includes('ETIMEDOUT') || m.includes('fetch failed')) {
+    return 'RPC_TIMEOUT';
+  }
+  return 'INTERNAL_ERROR';
+}
+
+async function readTicketState(contract, slot) {
+  if (!slot || Number(slot) <= 0) return null;
+  const [owner, version, paidPrice, admitted] = await contract.getTicket(BigInt(slot));
+  const vNum = Number(version);
+  let listed = false;
+  let resalePriceWei = '0';
+  if (vNum > 0) {
+    const [, price, active] = await contract.getListing(BigInt(slot), version);
+    listed = Boolean(active);
+    if (active) resalePriceWei = price.toString();
+  }
+  return {
+    slot: Number(slot),
+    owner,
+    version: vNum,
+    paidPriceWei: paidPrice.toString(),
+    admitted: Boolean(admitted),
+    listed,
+    resalePriceWei,
+  };
+}
+
+async function buildStatusSnapshot(rpc, rpcUrl, contractAddress, artifact) {
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+  const [
+    chainId,
+    editionId,
+    phase,
+    entrantsCount,
+    winnersCount,
+    issuedCount,
+    admittedCount,
+    drawn,
+    drawLocked,
+    capacity,
+    facePrice,
+    claimDeadline,
+    resaleCutoff,
+    gateClose,
+    balance,
+    code,
+    winners,
+  ] = await Promise.all([
+    rpc('eth_chainId').then((x) => Number(BigInt(x))),
+    c.editionId(),
+    c.phase(),
+    c.entrantsCount(),
+    c.winnersCount(),
+    c.issuedCount(),
+    c.admittedCount(),
+    c.drawn(),
+    c.drawLocked(),
+    c.capacity(),
+    c.facePrice(),
+    c.claimDeadline(),
+    c.resaleCutoff(),
+    c.gateClose(),
+    provider.getBalance(contractAddress),
+    provider.getCode(contractAddress),
+    c.getWinners(),
+  ]);
+
+  const wCount = Number(winnersCount);
+  const tickets = [];
+  for (let s = 1; s <= wCount; s++) {
+    tickets.push(await readTicketState(c, s));
+  }
+
+  const fixture = loadDemoFixture();
+  const roles = {};
+  if (fixture?.roles) {
+    for (const [roleId, info] of Object.entries(fixture.roles)) {
+      const [ethBal, withdrawable] = await Promise.all([
+        provider.getBalance(info.address),
+        c.proceeds(info.address),
+      ]);
+      roles[roleId] = {
+        role: roleId,
+        label: info.label,
+        address: info.address,
+        ethBalanceWei: ethBal.toString(),
+        withdrawableWei: withdrawable.toString(),
+      };
+    }
+  }
+
+  let volumeEvidence = undefined;
+  if (existsSync(volumeSummaryPath)) {
+    try {
+      const vs = JSON.parse(readFileSync(volumeSummaryPath, 'utf8'));
+      volumeEvidence = {
+        totalWrites: vs.totalWrites,
+        writesPerSecond: vs.writesPerSecond,
+        manifestSha256: vs.manifestSha256,
+      };
+    } catch {}
+  }
+
+  return {
+    ok: true,
+    chainId,
+    rpcUrl,
+    contract: contractAddress,
+    codeHash: ethers.keccak256(code),
+    editionId,
+    phase,
+    drawLocked,
+    drawn,
+    capacity: Number(capacity),
+    facePriceWei: facePrice.toString(),
+    maxResalePriceWei: facePrice.toString(),
+    entrantsCount: Number(entrantsCount),
+    winnersCount: wCount,
+    issuedCount: Number(issuedCount),
+    admittedCount: Number(admittedCount),
+    claimDeadline: Number(claimDeadline),
+    resaleCutoff: Number(resaleCutoff),
+    gateClose: Number(gateClose),
+    balanceWei: balance.toString(),
+    contractBalanceWei: balance.toString(),
+    winners: Array.from(winners),
+    tickets,
+    roles,
+    volumeEvidence,
+  };
+}
+
+async function executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, value = 0n, gasLimit = 500_000n, opId = null, meta = null, beforeBroadcast = null, slotHint = null }) {
+  try {
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, value, gasLimit, opId, meta, beforeBroadcast });
+    const confirmed = receipt.status === '0x1';
+    let ticket = null;
+    if (confirmed) {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+      const resolvedSlot = slotHint || Number(await c.heldSlot(wallet.address));
+      if (resolvedSlot > 0) {
+        ticket = await readTicketState(c, resolvedSlot);
+      }
+    }
+    return {
+      ok: confirmed,
+      txStatus: confirmed ? 'confirmed' : 'rejected',
+      txHash,
+      blockNumber: Number(BigInt(receipt.blockNumber)),
+      errorCode: confirmed ? null : 'INTERNAL_ERROR',
+      error: confirmed ? null : 'Transaction reverted on-chain',
+      ticket,
+    };
+  } catch (err) {
+    const msg = err?.message || String(err);
+    const code = mapErrorToCode(msg);
+    const isRecovering = code === 'RPC_TIMEOUT';
+    return {
+      ok: false,
+      txStatus: isRecovering ? 'unknown_recovering' : 'rejected',
+      txHash: null,
+      blockNumber: null,
+      errorCode: code,
+      error: msg,
+      ticket: null,
+    };
+  }
+}
+
 async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
-  const rpcUrl = opts.rpc || 'http://127.0.0.1:8545';
+  const rpcUrl = resolveRpcUrl(opts);
   const { rpc } = makeRpc(rpcUrl);
   const artifact = loadArtifact();
   const iface = new ethers.Interface(artifact.abi);
 
   if (!cmd || cmd === 'help') {
     console.log(
-      'Commands: deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine'
+      'Commands: init-demo, deploy, status, attest, enter, lock-draw, draw, claim, list, buy, sign-gate, redeem, resume, withdraw, ticket, advance-time, mine'
     );
+    return;
+  }
+
+  if (cmd === 'init-demo') {
+    const fixture = loadDemoFixture();
+    if (!fixture) throw new Error('Missing artifacts/demo-fixture.json');
+    for (const info of Object.values(fixture.roles)) {
+      const jp = getJournalPath(info.address);
+      if (existsSync(jp)) unlinkSync(jp);
+      const balHex = await rpc('eth_getBalance', [info.address, 'latest']);
+      if (BigInt(balHex) < 10n * 10n ** 18n) {
+        await rpc('anvil_setBalance', [info.address, '0x21e19e0c9bab2400000']); // 10,000 ETH
+      }
+    }
+    const organiserWallet = new ethers.Wallet(fixture.roles.organiser.privateKey);
+    const block = await rpc('eth_getBlockByNumber', ['latest', false]);
+    const now = Number(BigInt(block.timestamp));
+    const editionId = ethers.hexlify(ethers.randomBytes(32));
+    const ev = fixture.event;
+    const entryDeadline = BigInt(now + Number(ev.entryWindow));
+
+    const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
+    const deployTx = await factory.getDeployTransaction(
+      fixture.roles.organiser.address,
+      fixture.roles.attester.address,
+      fixture.roles.gate.address,
+      BigInt(ev.capacity),
+      BigInt(ev.facePriceWei),
+      editionId,
+      entryDeadline,
+      BigInt(ev.claimWindow),
+      BigInt(ev.resaleWindow),
+      BigInt(ev.gateWindow)
+    );
+    const { txHash, receipt } = await sendSignedTx({
+      rpc,
+      wallet: organiserWallet,
+      to: null,
+      data: deployTx.data,
+      gasLimit: 4_000_000n,
+      opId: 'init-demo',
+    });
+    if (receipt.status !== '0x1') throw new Error(`init-demo deploy reverted: ${txHash}`);
+    const contractAddress = receipt.contractAddress;
+    const runtimeCode = await rpc('eth_getCode', [contractAddress, 'latest']);
+    saveDemoState({
+      contract: contractAddress,
+      editionId,
+      codeHash: ethers.keccak256(runtimeCode),
+      chainId: Number(BigInt(await rpc('eth_chainId'))),
+      rpcUrl,
+      txHash,
+      deployedAt: new Date().toISOString(),
+    });
+    const snapshot = await buildStatusSnapshot(rpc, rpcUrl, contractAddress, artifact);
+    console.log(JSON.stringify(snapshot, null, 2));
     return;
   }
 
@@ -350,67 +632,16 @@ async function main() {
   }
 
   if (cmd === 'status') {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const c = new ethers.Contract(opts.contract, artifact.abi, provider);
-    const [
-      chainId,
-      editionId,
-      phase,
-      entrantsCount,
-      winnersCount,
-      issuedCount,
-      admittedCount,
-      drawn,
-      drawLocked,
-      claimDeadline,
-      resaleCutoff,
-      gateClose,
-      balance,
-      code,
-    ] = await Promise.all([
-      rpc('eth_chainId').then((x) => Number(BigInt(x))),
-      c.editionId(),
-      c.phase(),
-      c.entrantsCount(),
-      c.winnersCount(),
-      c.issuedCount(),
-      c.admittedCount(),
-      c.drawn(),
-      c.drawLocked(),
-      c.claimDeadline(),
-      c.resaleCutoff(),
-      c.gateClose(),
-      provider.getBalance(opts.contract),
-      provider.getCode(opts.contract),
-    ]);
-    console.log(
-      JSON.stringify(
-        {
-          chainId,
-          contract: opts.contract,
-          codeHash: ethers.keccak256(code),
-          editionId,
-          phase,
-          drawLocked,
-          drawn,
-          entrantsCount: Number(entrantsCount),
-          winnersCount: Number(winnersCount),
-          issuedCount: Number(issuedCount),
-          admittedCount: Number(admittedCount),
-          claimDeadline: Number(claimDeadline),
-          resaleCutoff: Number(resaleCutoff),
-          gateClose: Number(gateClose),
-          balanceWei: balance.toString(),
-        },
-        null,
-        2
-      )
-    );
+    const contractAddress = resolveContract(opts);
+    const snapshot = await buildStatusSnapshot(rpc, rpcUrl, contractAddress, artifact);
+    console.log(JSON.stringify(snapshot, null, 2));
     return;
   }
 
   if (cmd === 'attest') {
-    const attester = new ethers.Wallet(opts.key);
+    const attester = new ethers.Wallet(resolveRoleKey(opts, 'attester'));
+    const contractAddress = resolveContract(opts);
+    const editionId = resolveEditionId(opts);
     const chainId = Number(BigInt(await rpc('eth_chainId')));
     const subject = opts.subject.startsWith('0x') && opts.subject.length === 66
       ? opts.subject
@@ -418,8 +649,8 @@ async function main() {
     const sig = await signAttestation(
       attester,
       chainId,
-      opts.contract,
-      opts['edition-id'],
+      contractAddress,
+      editionId,
       subject,
       opts.wallet,
       BigInt(opts.expiry)
@@ -429,41 +660,85 @@ async function main() {
   }
 
   if (cmd === 'enter') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts));
+    const contractAddress = resolveContract(opts);
     const subject = opts.subject.startsWith('0x') && opts.subject.length === 66
       ? opts.subject
       : ethers.id(opts.subject);
-    const data = iface.encodeFunctionData('enter', [subject, BigInt(opts.expiry), opts.attestation]);
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 300_000n });
+    let expiry = opts.expiry;
+    let attestation = opts.attestation;
+    if (!attestation) {
+      const fixture = loadDemoFixture();
+      if (!fixture?.roles?.attester?.privateKey) {
+        throw new Error('Missing --attestation and no attester key in artifacts/demo-fixture.json');
+      }
+      const attester = new ethers.Wallet(fixture.roles.attester.privateKey);
+      const chainId = Number(BigInt(await rpc('eth_chainId')));
+      const block = await rpc('eth_getBlockByNumber', ['latest', false]);
+      expiry = String(Number(BigInt(block.timestamp)) + 300);
+      const editionId = resolveEditionId(opts);
+      attestation = await signAttestation(attester, chainId, contractAddress, editionId, subject, wallet.address, BigInt(expiry));
+    }
+    const data = iface.encodeFunctionData('enter', [subject, BigInt(expiry), attestation]);
+    if (opts.json) {
+      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 300_000n });
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 300_000n });
     console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
   if (cmd === 'lock-draw') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts, 'organiser'));
+    const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('lockDraw', []);
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 200_000n });
+    if (opts.json) {
+      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 200_000n });
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 200_000n });
     console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
     return;
   }
 
   if (cmd === 'draw') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts, 'organiser'));
+    const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('draw', []);
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 12_000_000n });
+    if (opts.json) {
+      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 12_000_000n });
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 12_000_000n });
     console.log(JSON.stringify({ txHash, status: receipt.status, gasUsed: Number(BigInt(receipt.gasUsed)) }, null, 2));
     return;
   }
 
   if (cmd === 'claim') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts));
+    const contractAddress = resolveContract(opts);
+    let valueWei = opts.value ? BigInt(opts.value) : null;
+    if (valueWei === null) {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+      valueWei = await c.facePrice();
+    }
     const data = iface.encodeFunctionData('claim', []);
+    if (opts.json) {
+      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, value: valueWei, gasLimit: 300_000n });
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
     const { txHash, receipt } = await sendSignedTx({
       rpc,
       wallet,
-      to: opts.contract,
+      to: contractAddress,
       data,
-      value: BigInt(opts.value),
+      value: valueWei,
       gasLimit: 300_000n,
     });
     console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
@@ -471,20 +746,32 @@ async function main() {
   }
 
   if (cmd === 'list') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts));
+    const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('list', [BigInt(opts.slot), BigInt(opts.version), BigInt(opts.price)]);
-    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: opts.contract, data, gasLimit: 250_000n });
+    if (opts.json) {
+      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, gasLimit: 250_000n, slotHint: Number(opts.slot) });
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
+    const { txHash, receipt } = await sendSignedTx({ rpc, wallet, to: contractAddress, data, gasLimit: 250_000n });
     console.log(JSON.stringify({ txHash, status: receipt.status }, null, 2));
     return;
   }
 
   if (cmd === 'buy') {
-    const wallet = new ethers.Wallet(opts.key);
+    const wallet = new ethers.Wallet(resolveRoleKey(opts));
+    const contractAddress = resolveContract(opts);
     const data = iface.encodeFunctionData('buy', [BigInt(opts.slot), BigInt(opts.version), BigInt(opts.price)]);
+    if (opts.json) {
+      const res = await executeJsonTx({ rpc, rpcUrl, wallet, contractAddress, artifact, data, value: BigInt(opts.price), gasLimit: 300_000n, slotHint: Number(opts.slot) });
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
     const { txHash, receipt } = await sendSignedTx({
       rpc,
       wallet,
-      to: opts.contract,
+      to: contractAddress,
       data,
       value: BigInt(opts.price),
       gasLimit: 300_000n,
@@ -494,34 +781,80 @@ async function main() {
   }
 
   if (cmd === 'sign-gate') {
-    const owner = new ethers.Wallet(opts.key);
+    const owner = new ethers.Wallet(resolveRoleKey(opts));
+    const contractAddress = resolveContract(opts);
+    const editionId = resolveEditionId(opts);
     const chainId = Number(BigInt(await rpc('eth_chainId')));
+    const slotNum = Number(opts.slot);
+    let versionNum = opts.version ? Number(opts.version) : null;
+    if (!versionNum) {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const c = new ethers.Contract(contractAddress, artifact.abi, provider);
+      const [, v] = await c.getTicket(BigInt(slotNum));
+      versionNum = Number(v);
+    }
+    let expiryNum = opts.expiry ? Number(opts.expiry) : null;
+    if (!expiryNum) {
+      const block = await rpc('eth_getBlockByNumber', ['latest', false]);
+      expiryNum = Number(BigInt(block.timestamp)) + 90;
+    }
     const sig = await signGateCredential(
       owner,
       chainId,
-      opts.contract,
-      opts['edition-id'],
-      BigInt(opts.slot),
-      BigInt(opts.version),
-      BigInt(opts.expiry)
+      contractAddress,
+      editionId,
+      BigInt(slotNum),
+      BigInt(versionNum),
+      BigInt(expiryNum)
     );
-    console.log(JSON.stringify({ slot: opts.slot, version: opts.version, expiry: opts.expiry, ownerSig: sig }, null, 2));
+    if (opts.json) {
+      console.log(JSON.stringify({
+        ok: true,
+        txStatus: 'confirmed',
+        txHash: null,
+        error: null,
+        credential: {
+          contract: contractAddress,
+          editionId,
+          slot: slotNum,
+          version: versionNum,
+          expiry: expiryNum,
+          ownerSig: sig,
+        },
+      }, null, 2));
+      return;
+    }
+    console.log(JSON.stringify({ slot: String(slotNum), version: String(versionNum), expiry: String(expiryNum), ownerSig: sig }, null, 2));
     return;
   }
 
   if (cmd === 'redeem') {
-    const gate = new ethers.Wallet(opts.key);
+    const gate = new ethers.Wallet(resolveRoleKey(opts, 'gate'));
+    const contractAddress = resolveContract(opts);
+    const ownerSig = opts.sig || opts['owner-sig'];
     const scanId = opts['scan-id'] || ethers.hexlify(ethers.randomBytes(32));
     const claim = claimGateScanAtomic(scanId, {
       status: 'CLAIMED',
       acted: false,
-      contract: opts.contract,
+      contract: contractAddress,
       slot: String(opts.slot),
       version: String(opts.version),
       pid: process.pid,
       claimedAt: new Date().toISOString(),
     });
     if (!claim.claimed) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          ok: false,
+          txStatus: 'rejected',
+          txHash: null,
+          scanId,
+          gateDecision: 'REJECT',
+          errorCode: 'ALREADY_ADMITTED',
+          error: `Scan ID ${scanId} already claimed or acted on.`,
+        }, null, 2));
+        return;
+      }
       throw new Error(`Scan ID ${scanId} already claimed or acted on.`);
     }
 
@@ -529,54 +862,107 @@ async function main() {
       BigInt(opts.slot),
       BigInt(opts.version),
       BigInt(opts.expiry),
-      opts.sig,
+      ownerSig,
       scanId,
     ]);
-    const { txHash, receipt } = await sendSignedTx({
-      rpc,
-      wallet: gate,
-      to: opts.contract,
-      data,
-      gasLimit: 250_000n,
-      opId: scanId,
-      meta: {
-        kind: 'gate-redeem',
-        contract: opts.contract,
-        scanId,
-        slot: String(opts.slot),
-        version: String(opts.version),
-      },
-      beforeBroadcast: () => {
-        if (existsSync(getGateFinalPath(scanId))) {
-          throw new Error(`Scan ID ${scanId} was already finalized before broadcast.`);
-        }
-      },
-    });
+    let txHash, receipt;
+    try {
+      ({ txHash, receipt } = await sendSignedTx({
+        rpc,
+        wallet: gate,
+        to: contractAddress,
+        data,
+        gasLimit: 250_000n,
+        opId: scanId,
+        meta: {
+          kind: 'gate-redeem',
+          contract: contractAddress,
+          scanId,
+          slot: String(opts.slot),
+          version: String(opts.version),
+        },
+        beforeBroadcast: () => {
+          if (existsSync(getGateFinalPath(scanId))) {
+            throw new Error(`Scan ID ${scanId} was already finalized before broadcast.`);
+          }
+        },
+      }));
+    } catch (err) {
+      if (opts.json) {
+        const msg = err?.message || String(err);
+        const code = mapErrorToCode(msg);
+        console.log(JSON.stringify({
+          ok: false,
+          txStatus: code === 'RPC_TIMEOUT' ? 'unknown_recovering' : 'rejected',
+          txHash: null,
+          scanId,
+          gateDecision: null,
+          errorCode: code,
+          error: msg,
+          ticket: null,
+        }, null, 2));
+        return;
+      }
+      throw err;
+    }
+
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const c = new ethers.Contract(contractAddress, artifact.abi, provider);
 
     if (receipt.status !== '0x1') {
       const fin = tryFinalizeGateDecision(scanId, { decision: 'REJECT', status: 'REJECTED', txHash, slot: String(opts.slot), version: String(opts.version) });
       if (!fin.wonFinalization) {
-        console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'ALREADY_FINALIZED', gateDecision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        return;
+      }
+      if (opts.json) {
+        const ticket = await readTicketState(c, Number(opts.slot));
+        console.log(JSON.stringify({
+          ok: false,
+          txStatus: 'rejected',
+          txHash,
+          scanId,
+          blockNumber: Number(BigInt(receipt.blockNumber)),
+          gateDecision: 'REJECT',
+          errorCode: ticket?.admitted ? 'ALREADY_ADMITTED' : 'STALE_CREDENTIAL',
+          error: 'Gate redeem rejected on-chain (stale version, already admitted, expired, or invalid signature).',
+          ticket,
+        }, null, 2));
         return;
       }
       console.log(JSON.stringify({ decision: 'REJECT', txHash, status: receipt.status, scanId }, null, 2));
       return;
     }
 
-    const admittedEvent = parseAdmittedEvent(iface, opts.contract, receipt, scanId, opts.slot, opts.version);
+    const admittedEvent = parseAdmittedEvent(iface, contractAddress, receipt, scanId, opts.slot, opts.version);
     if (!admittedEvent) {
       const fin = tryFinalizeGateDecision(scanId, { decision: 'HOLD_FOR_STAFF', status: 'HOLD_FOR_STAFF', txHash, slot: String(opts.slot), version: String(opts.version) });
       if (!fin.wonFinalization) {
-        console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+        console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'ALREADY_FINALIZED', gateDecision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
         return;
       }
-      console.log(JSON.stringify({ decision: 'HOLD_FOR_STAFF', reason: 'Missing or mismatched Admitted log', txHash, scanId }, null, 2));
+      console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'HOLD_FOR_STAFF', gateDecision: 'REJECT', reason: 'Missing or mismatched Admitted log', txHash, scanId }, null, 2));
       return;
     }
 
     const fin = tryFinalizeGateDecision(scanId, { decision: 'ADMIT', status: 'ADMITTED', txHash, slot: String(opts.slot), version: String(opts.version) });
     if (!fin.wonFinalization) {
-      console.log(JSON.stringify({ decision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+      console.log(JSON.stringify({ ok: false, txStatus: 'rejected', decision: 'ALREADY_FINALIZED', gateDecision: 'ALREADY_FINALIZED', prior: fin.existing, scanId }, null, 2));
+      return;
+    }
+    if (opts.json) {
+      const ticket = await readTicketState(c, Number(opts.slot));
+      console.log(JSON.stringify({
+        ok: true,
+        txStatus: 'confirmed',
+        txHash,
+        scanId,
+        blockNumber: Number(BigInt(receipt.blockNumber)),
+        gateDecision: 'ADMIT',
+        errorCode: null,
+        error: null,
+        ticket,
+      }, null, 2));
       return;
     }
     console.log(JSON.stringify({ decision: 'ADMIT', txHash, scanId, slot: opts.slot, version: opts.version }, null, 2));

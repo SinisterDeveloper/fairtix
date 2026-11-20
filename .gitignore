@@ -3,4 +3,5 @@ artifacts/journal/
 artifacts/gate-claims/
 artifacts/gate-journal.json
 artifacts/volume-manifest.ndjson.gz
+artifacts/demo-state.json
 *.log

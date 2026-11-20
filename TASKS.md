@@ -201,10 +201,10 @@ web/
 > **Exit State:** Ugly UI where `enter → draw → claim → list → buy → redeem` works end-to-end on Anvil. Working demo exists at Hour 2.5.
 
 - **Dev 1 (Core / Blockchain):**
-  - [ ] **L1-D1-1:** Create `artifacts/demo-fixture.json` with 5 Anvil accounts (`organiser`, `gate`, `attester`, `fanA`, `fanB`), `facePriceWei: "50000000000000000"` (`0.05 ETH`), `capacity: 2`, `entryWindow: 120`, `claimWindow: 300`, `resaleWindow: 300`, `gateWindow: 600`.
-  - [ ] **L1-D1-2:** Add `init-demo` to `src/cli.cjs`: deploys `FairTickets`, writes `artifacts/demo-state.json` (`contract`, `editionId`, `codeHash`, `chainId`, `rpcUrl`).
-  - [ ] **L1-D1-3:** Add `--role <role>` + auto-read of `artifacts/demo-state.json` to `src/cli.cjs` for `status`, `enter` (auto-attests), `lock-draw`, `draw`, `claim`, `list`, `buy`, `sign-gate`, `redeem`, `advance-time`, `mine`.
-  - [ ] **L1-D1-4:** Extend `status --json` in `src/cli.cjs` to include `tickets[]`, `winners[]`, `facePriceWei`, `maxResalePriceWei`, and `roles`.
+  - [x] **L1-D1-1:** Create `artifacts/demo-fixture.json` with 5 Anvil accounts (`organiser`, `gate`, `attester`, `fanA`, `fanB`), `facePriceWei: "50000000000000000"` (`0.05 ETH`), `capacity: 1`, `entryWindow: 120`, `claimWindow: 300`, `resaleWindow: 300`, `gateWindow: 600`.
+  - [x] **L1-D1-2:** Add `init-demo` to `src/cli.cjs`: deploys `FairTickets`, writes `artifacts/demo-state.json` (`contract`, `editionId`, `codeHash`, `chainId`, `rpcUrl`).
+  - [x] **L1-D1-3:** Add `--role <role>` + auto-read of `artifacts/demo-state.json` to `src/cli.cjs` for `status`, `enter` (auto-attests), `lock-draw`, `draw`, `claim`, `list`, `buy`, `sign-gate`, `redeem`, `advance-time`, `mine`.
+  - [x] **L1-D1-4:** Extend `status --json` in `src/cli.cjs` to include `tickets[]`, `winners[]`, `facePriceWei`, `maxResalePriceWei`, and `roles`.
 
 - **Dev 2 (Next.js Backend & Frontend):**
   - [ ] **L1-D2-1:** Scaffold `web/` (Next.js App Router + TypeScript) and copy Section 2 into `web/src/lib/types.ts`.
