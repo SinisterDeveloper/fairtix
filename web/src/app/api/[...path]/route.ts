@@ -6,6 +6,7 @@ export const runtime = 'nodejs';
 type Body = Record<string, unknown>;
 const str = (v: unknown, fallback = '') => String(v ?? fallback);
 const num = (v: unknown, fallback = 0) => Number(v ?? fallback);
+const randomBytes32 = () => `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 const role = (b: Body) => str(b.role, 'fanA') as RoleId;
 const invoke = async (args: string[]) => {
   const result = await runCli(args) as ApiMutationResponse;
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
     case 'gate/redeem': {
       const credential = body.credential as Record<string, unknown> | undefined;
       if (!credential) return NextResponse.json({ ok: false, txStatus: 'rejected', error: 'credential is required' }, { status: 400 });
-      return invoke(['redeem', '--role', 'gate', '--scan-id', str(body.scanId || crypto.randomUUID()), '--slot', str(credential.slot), '--version', str(credential.version), '--expiry', str(credential.expiry), '--owner-sig', str(credential.ownerSig), ...json]);
+      return invoke(['redeem', '--role', 'gate', '--scan-id', str(body.scanId || randomBytes32()), '--slot', str(credential.slot), '--version', str(credential.version), '--expiry', str(credential.expiry), '--owner-sig', str(credential.ownerSig), ...json]);
     }
     case 'withdraw': return invoke(['withdraw', ...roleFlags, ...json]);
     case 'tx/resume': return invoke(['resume', ...roleFlags, ...(body.scanId ? ['--scan-id', str(body.scanId)] : []), ...(body.txHash ? ['--tx-hash', str(body.txHash)] : []), ...json]);

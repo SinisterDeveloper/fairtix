@@ -6,15 +6,16 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { ethers, makeRpc, signAttestation, signGateCredential } = require('./toolchain.cjs');
 
 const root = resolve(__dirname, '..');
+const stateDir = resolve(process.env.FAIRTICKETS_STATE_DIR || join(root, 'artifacts'));
 const artifactPath = join(root, 'artifacts', 'FairTickets.json');
-const journalDir = join(root, 'artifacts', 'journal');
-const gateClaimsDir = join(root, 'artifacts', 'gate-claims');
-const demoFixturePath = join(root, 'artifacts', 'demo-fixture.json');
-const demoStatePath = join(root, 'artifacts', 'demo-state.json');
-const activityLogPath = join(root, 'artifacts', 'activity-log.ndjson');
+const journalDir = join(stateDir, 'journal');
+const gateClaimsDir = join(stateDir, 'gate-claims');
+const demoFixturePath = join(stateDir, 'demo-fixture.json');
+const demoStatePath = join(stateDir, 'demo-state.json');
+const activityLogPath = join(stateDir, 'activity-log.ndjson');
 
 function logActivity(event) {
-  mkdirSync(join(root, 'artifacts'), { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
   appendFileSync(activityLogPath, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + '\n', { mode: 0o600 });
 }
 
@@ -37,6 +38,11 @@ function activitySubject(opts) {
   if (!opts.subject && !opts.role) return null;
   const subject = String(opts.subject || `demo-${opts.role}`);
   return subject.startsWith('0x') && subject.length === 66 ? subject : ethers.id(subject);
+}
+
+function normalizeScanId(scanId) {
+  const value = String(scanId);
+  return value.startsWith('0x') && value.length === 66 ? value : ethers.id(value);
 }
 
 function loadArtifact() {
@@ -398,6 +404,7 @@ async function main() {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             const status = value.status;
             const gateDecision = value.decision;
+            if (jsonMode && gateDecision) value.gateDecision = gateDecision;
             if (jsonMode && gateDecision === 'ADMIT') value.txStatus = 'confirmed';
             else if (jsonMode && gateDecision === 'HOLD_FOR_STAFF') value.txStatus = 'unknown_recovering';
             else if (jsonMode && gateDecision === 'ALREADY_FINALIZED') value.txStatus = value.prior?.decision === 'ADMIT' ? 'confirmed' : value.prior?.decision === 'REJECT' ? 'rejected' : 'unknown_recovering';
@@ -690,7 +697,7 @@ async function main() {
 
   if (cmd === 'redeem') {
     const gate = new ethers.Wallet(opts.key);
-    const scanId = opts['scan-id'] || ethers.hexlify(ethers.randomBytes(32));
+    const scanId = normalizeScanId(opts['scan-id'] || ethers.hexlify(ethers.randomBytes(32)));
     const claim = claimGateScanAtomic(scanId, {
       status: 'CLAIMED',
       acted: false,
@@ -767,7 +774,7 @@ async function main() {
     if (!address) {
       throw new Error('resume requires --address or --key');
     }
-    const targetOpId = opts['op-id'] || opts['scan-id'] || null;
+    const targetOpId = opts['op-id'] || (opts['scan-id'] ? normalizeScanId(opts['scan-id']) : null);
     const targetTxHash = opts['tx-hash'] ? String(opts['tx-hash']).toLowerCase() : null;
     const entries = await withWalletLock(address, () => readJournal(address));
     const needsWork = entries.filter((e) => {
@@ -840,7 +847,7 @@ async function main() {
     // Re-read the journal inside withWalletLock so a worker that wrote & exited after our initial
     // snapshot cannot be misclassified as ABORTED_BEFORE_SEND.
     if (opts['scan-id']) {
-      const scanId = opts['scan-id'];
+      const scanId = normalizeScanId(opts['scan-id']);
       const claimPath = getGateClaimPath(scanId);
       await withWalletLock(address, () => {
         const freshEntries = readJournal(address);
