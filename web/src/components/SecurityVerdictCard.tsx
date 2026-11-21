@@ -20,7 +20,7 @@ export default function SecurityVerdictCard({
   return (
     <section className="card" aria-live="polite">
       <div className="card-head">
-        <h2>Live Security &amp; ML Verdict</h2>
+        <h2>Security Check</h2>
         <span
           className={`pill ${
             sec.decision === 'ALLOW'
@@ -33,25 +33,33 @@ export default function SecurityVerdictCard({
           {sec.decision || 'ALLOW'} · Risk {sec.riskScore ?? 0}/100
         </span>
       </div>
-      <div className="metrics-grid">
-        <div className="metric">
-          <span>Supervised ML Score</span>
-          <strong>{sec.mlScore ?? 0} / 100</strong>
-          <small>Decision ID: {sec.decisionId || '—'}</small>
+      <p className="meta" style={{ margin: '0 0 8px' }}>
+        {sec.reasons && sec.reasons.length > 0
+          ? `Flagged signals: ${sec.reasons.join(', ')}`
+          : 'Verified normal fan activity.'}
+      </p>
+      <details>
+        <summary>ML &amp; anomaly telemetry details</summary>
+        <div className="metrics-grid" style={{ marginTop: 10 }}>
+          <div className="metric">
+            <span>Supervised ML Score</span>
+            <strong>{sec.mlScore ?? 0} / 100</strong>
+            <small>Decision ID: {sec.decisionId || '—'}</small>
+          </div>
+          <div className="metric">
+            <span>Unsupervised Anomaly</span>
+            <strong>{sec.unsupervisedAnomalyScore ?? 0} / 100</strong>
+            <small>Live Welford Human Baseline</small>
+          </div>
+          <div className="metric">
+            <span>Reasons</span>
+            <strong>
+              {sec.reasons && sec.reasons.length > 0 ? sec.reasons.join(', ') : 'Clean ALLOW'}
+            </strong>
+            <small>Enforced server-side before Anvil tx</small>
+          </div>
         </div>
-        <div className="metric">
-          <span>Unsupervised Anomaly</span>
-          <strong>{sec.unsupervisedAnomalyScore ?? 0} / 100</strong>
-          <small>Live Welford Human Baseline</small>
-        </div>
-        <div className="metric">
-          <span>Reasons</span>
-          <strong>
-            {sec.reasons && sec.reasons.length > 0 ? sec.reasons.join(', ') : 'Clean ALLOW'}
-          </strong>
-          <small>Enforced server-side before Anvil tx</small>
-        </div>
-      </div>
+      </details>
       {chl && onSubmitChallenge && (
         <div style={{ marginTop: 12 }}>
           <p>

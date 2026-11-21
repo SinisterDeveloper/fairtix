@@ -290,7 +290,7 @@ export default function BookingsPage() {
                 {phase.includes('CLAIM') && isWinner
                   ? 'You have a confirmed reservation waiting to be claimed.'
                   : phase.includes('RESALE')
-                    ? 'You do not hold a ticket right now. Browse available resale listings below or return to Book Tickets.'
+                    ? 'You do not hold a ticket right now. Check below if resale tickets are listed, or return to Book Tickets.'
                     : phase.includes('GATE') || phase.includes('CLOSED')
                       ? 'You do not hold an active ticket for this event.'
                       : status.drawn
