@@ -213,10 +213,10 @@ export default function GatePage() {
             {decisionKind === 'admit'
               ? 'The gate transaction was confirmed on-chain and this ticket is now marked admitted.'
               : decisionKind === 'hold'
-                ? 'Receipt confirmation is unresolved. Do not re-scan—click Check / Resume below to reconcile.'
-                : explainErrorCode(result.errorCode) ||
-                  result.error ||
-                  'This pass could not be verified on-chain.'}
+                  ? 'Receipt confirmation is unresolved. Do not re-scan—click Check / Resume below to reconcile.'
+                  : explainErrorCode(result.errorCode, result.error) ||
+                    result.error ||
+                    'This pass could not be verified on-chain.'}
           </p>
         </section>
       )}
@@ -318,7 +318,9 @@ export default function GatePage() {
           <code>Admitted</code> contract event.
         </p>
 
-        <TxStatusBanner result={result} busy={busy} onResume={() => void resume()} />
+        {(result?.txStatus === 'unknown_recovering' || result?.txStatus === 'pending' || result?.txHash) && (
+          <TxStatusBanner result={result} busy={busy} onResume={() => void resume()} />
+        )}
 
         <details style={{ marginTop: 12 }}>
           <summary>Raw gate response JSON</summary>

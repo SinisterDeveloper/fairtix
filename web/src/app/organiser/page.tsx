@@ -1,7 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { describeAllocation } from '@/lib/allocation';
 import { DEFAULT_EVENT_META, loadEventMeta, saveEventMeta } from '@/lib/event-meta';
@@ -15,7 +14,10 @@ export default function OrganiserPage() {
   const [alertsData, setAlertsData] = useState<AlertsPayload | null>(null);
   const [result, setResult] = useState<ApiMutationResponse | null>(null);
   const [statusError, setStatusError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const busy = busyAction !== null;
+  const metaSyncedRef = useRef(false);
   const [eventTitle, setEventTitle] = useState(DEFAULT_EVENT_META.title);
   const [eventVenue, setEventVenue] = useState(DEFAULT_EVENT_META.venue);
   const [eventDate, setEventDate] = useState(DEFAULT_EVENT_META.dateLabel);
@@ -45,13 +47,17 @@ export default function OrganiserPage() {
       setStatus(sJson);
       setAlertsData(aJson);
       setStatusError('');
-      if (sJson.eventMeta) {
-        setEventTitle((prev) => prev || sJson.eventMeta!.title);
-        setEventVenue((prev) => prev || sJson.eventMeta!.venue);
-        setEventDate((prev) => prev || sJson.eventMeta!.dateLabel);
+      if (sJson.eventMeta && !metaSyncedRef.current) {
+        metaSyncedRef.current = true;
+        setEventTitle(sJson.eventMeta.title);
+        setEventVenue(sJson.eventMeta.venue);
+        setEventDate(sJson.eventMeta.dateLabel);
+        saveEventMeta(sJson.eventMeta);
       }
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : 'Could not load organiser state.');
+    } finally {
+      setLoaded(true);
     }
   }
 
@@ -66,7 +72,7 @@ export default function OrganiserPage() {
   }, []);
 
   async function createEvent() {
-    setBusy(true);
+    setBusyAction('create');
     setMetaSavedMsg('');
     try {
       const meta = {
@@ -90,12 +96,12 @@ export default function OrganiserPage() {
       if (resJson.ok) setStatusError('');
       await refresh();
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   async function saveDisplayDetails() {
-    setBusy(true);
+    setBusyAction('save');
     setMetaSavedMsg('');
     try {
       const meta = {
@@ -114,12 +120,12 @@ export default function OrganiserPage() {
         await refresh();
       }
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   async function resetEvent() {
-    setBusy(true);
+    setBusyAction('reset');
     setMetaSavedMsg('');
     try {
       const r = await fetch('/api/organiser/reset-event', {
@@ -131,12 +137,12 @@ export default function OrganiserPage() {
       setStatus(null);
       setStatusError('');
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
   async function act(endpoint: string, body: Record<string, unknown> = {}) {
-    setBusy(true);
+    setBusyAction(endpoint);
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
@@ -146,7 +152,7 @@ export default function OrganiserPage() {
       setResult((await r.json()) as ApiMutationResponse);
       await refresh();
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -182,7 +188,20 @@ export default function OrganiserPage() {
         </div>
       </div>
 
-      <LifecycleStepper phase={status?.phase} context="organiser" />
+      <p className="stepper-hint">
+        <strong>Organiser workflow:</strong>{' '}
+        {!loaded
+          ? 'Loading event operations…'
+          : !status
+            ? 'Create a new event below to open the fan booking queue.'
+            : activeStep === 1
+              ? 'Queue is open. Once fans join on Book Tickets, click "1. Lock queue" below.'
+              : activeStep === 2
+                ? 'Queue locked. Click "2. Assign slots" to finalize reservations.'
+                : activeStep === 3
+                  ? `Stage ${status.phase} is open. Advance to the next phase (+5m) when ready.`
+                  : 'Doors are open (or event ended). Collect proceeds or open Gate Scanner.'}
+      </p>
 
       {statusError && (
         <p className="role-warning" role="alert">
@@ -234,7 +253,7 @@ export default function OrganiserPage() {
                   ? 'Queue open'
                   : allocationInfo.state === 'lottery_required'
                     ? `Lottery: ${allocationInfo.lotteryApplicants} for ${allocationInfo.lotterySlots} slots`
-                    : 'No lottery needed'}
+                    : `Direct allocation (Queue ≤ Capacity)`}
             </span>
           </div>
           <div className="step-actions">
@@ -282,7 +301,13 @@ export default function OrganiserPage() {
         </section>
       )}
 
-      <section className="card">
+      {!loaded ? (
+        <section className="card">
+          <h2>Loading event operations…</h2>
+          <p className="meta">Checking active on-chain event state…</p>
+        </section>
+      ) : (
+        <section className="card">
         <div className="card-head">
           <h2>{status ? 'Manage Event' : 'Create Event'}</h2>
           <span className="pill">{status ? 'Live' : 'No active event'}</span>
@@ -337,19 +362,20 @@ export default function OrganiserPage() {
         </div>
         <div className="actions" style={{ marginTop: 8, marginBottom: 0 }}>
           <button disabled={busy} onClick={() => void createEvent()}>
-            {busy ? 'Creating…' : 'Create event & open queue'}
+            {busyAction === 'create' ? 'Creating…' : 'Create event & open queue'}
           </button>
           <button type="button" disabled={busy} className="secondary" onClick={() => void saveDisplayDetails()}>
-            Save display details
+            {busyAction === 'save' ? 'Saving…' : 'Save display details'}
           </button>
           {status && (
             <button type="button" disabled={busy} className="secondary" onClick={() => void resetEvent()}>
-              Close &amp; clear event
+              {busyAction === 'reset' ? 'Closing…' : 'Close & clear event'}
             </button>
           )}
           {metaSavedMsg && <span className="pill ok">{metaSavedMsg}</span>}
         </div>
       </section>
+      )}
 
       {alerts.length > 0 && (
         <div className="flow-callout">

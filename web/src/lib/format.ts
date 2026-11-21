@@ -88,7 +88,10 @@ const ERROR_EXPLANATIONS: Record<string, string> = {
   INTERNAL_ERROR: 'An unexpected client or bridge error occurred while invoking the CLI.',
 };
 
-export function explainErrorCode(errorCode?: string | null): string | null {
+export function explainErrorCode(errorCode?: string | null, rawError?: string | null): string | null {
   if (!errorCode) return null;
+  if (errorCode === 'STALE_CREDENTIAL' && rawError && /invalid expiry|expired/i.test(rawError)) {
+    return 'This QR pass has expired (passes are short-lived for 90 seconds). Refresh your QR pass in My Bookings and try again.';
+  }
   return ERROR_EXPLANATIONS[errorCode] ?? null;
 }

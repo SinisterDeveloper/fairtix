@@ -23,14 +23,23 @@ export default function Home() {
 
   useEffect(() => {
     setEventMeta(loadEventMeta());
-    fetch('/api/status', { cache: 'no-store' })
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    fetch('/api/status', { cache: 'no-store', signal: controller.signal })
       .then(async (r) => {
         const data = await r.json();
         if (!r.ok || data.ok === false) throw new Error(data.error || 'No active event.');
         setStatus(data);
       })
       .catch(() => setStatus(null))
-      .finally(() => setLoaded(true));
+      .finally(() => {
+        clearTimeout(timer);
+        setLoaded(true);
+      });
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, []);
 
   const liveMeta = status?.eventMeta || eventMeta;
