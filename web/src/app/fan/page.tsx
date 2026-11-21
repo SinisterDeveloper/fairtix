@@ -295,9 +295,11 @@ export default function FanPage() {
             </p>
           )}
           <div className="actions" style={{ marginBottom: 0 }}>
-            <button disabled={!isFan || busy} onClick={() => void act('claim')}>
-              Claim reserved ticket
-            </button>
+            {isFan && isWinner && !heldTicket && (
+              <button disabled={busy} onClick={() => void act('claim')}>
+                Claim reserved ticket
+              </button>
+            )}
             {heldTicket && (
               <Link className="button secondary" href="/bookings">
                 Go to My Bookings (QR) →
