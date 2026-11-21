@@ -2,6 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join, resolve } from 'node:path';
 import { runAccountFarmScenario } from '../simulator/account-farm.ts';
 import { renderBenchmarkMarkdown, runIbmBenchmarkSuite } from '../simulator/benchmark-ibm.ts';
+import { parseCapacityConfig, runCapacityBenchmark } from '../simulator/capacity-benchmark.ts';
+import { parseReplayConfig, runDefensiveReplay } from '../simulator/defensive-replay.ts';
 import { validateAndNormalizeEvent } from './events.ts';
 import { RiskEngine } from './risk-engine.ts';
 
@@ -100,6 +102,34 @@ function main(): void {
         2
       )
     );
+    return;
+  }
+
+  if (mode === 'replay') {
+    if (process.env.FAIRTICKETS_REPLAY_ENABLED !== '1') {
+      console.log(JSON.stringify({ ok: false, error: 'Security replay is disabled.' }));
+      return;
+    }
+    let config;
+    try {
+      config = parseReplayConfig(opts);
+    } catch (error) {
+      console.log(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      return;
+    }
+    console.log(JSON.stringify(runDefensiveReplay(config)));
+    return;
+  }
+
+  if (mode === 'capacity') {
+    let config;
+    try {
+      config = parseCapacityConfig(opts);
+    } catch (error) {
+      console.log(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      return;
+    }
+    console.log(JSON.stringify(runCapacityBenchmark(config)));
     return;
   }
 

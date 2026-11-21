@@ -1,0 +1,20 @@
+{
+  "name": "fairtickets-quai-deploy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated Hardhat + quais deployment scaffolding for FairTickets on Quai Orchard Cyprus-1",
+  "scripts": {
+    "quai:wallet": "node scripts/generate-quai-wallet.cjs",
+    "quai:compile": "npx hardhat compile",
+    "quai:check": "node .agents/skills/quai-orchard-deployment-skill/scripts/check-project.js ."
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "quais": "^1.0.0-alpha.58"
+  },
+  "devDependencies": {
+    "@openzeppelin/contracts": "5.0.2",
+    "@quai/hardhat-deploy-metadata": "^1.0.8",
+    "hardhat": "^2.22.19"
+  }
+}

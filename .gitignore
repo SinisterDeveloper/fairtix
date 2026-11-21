@@ -12,3 +12,6 @@ web/tsconfig.tsbuildinfo
 artifacts/security-events.ndjson
 artifacts/live-traces.ndjson
 artifacts/human-baseline.json
+.env
+cache/
+artifacts-hardhat/

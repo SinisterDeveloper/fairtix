@@ -1079,3 +1079,78 @@ details[open] summary {
     border-top: 2px dashed #b9d7c7;
   }
 }
+
+.security-evaluation-fields {
+  border: 0;
+  padding: 0;
+  margin: 0 0 14px;
+  min-inline-size: 0;
+}
+.replay-comparison tbody th {
+  color: var(--ink);
+  font-size: inherit;
+}
+.replay-comparison th:nth-child(2),
+.replay-comparison th:nth-child(3) {
+  width: 25%;
+}
+.replay-comparison td {
+  font-variant-numeric: tabular-nums;
+}
+.replay-evidence {
+  margin-top: 18px;
+}
+.replay-evidence summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.replay-evidence[open] summary {
+  margin-bottom: 8px;
+}
+.replay-evidence td {
+  vertical-align: top;
+}
+.replay-risk-scores {
+  margin: 0;
+}
+.replay-risk-scores div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  white-space: nowrap;
+}
+.replay-risk-scores dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.replay-model-features {
+  margin-top: 8px;
+}
+.replay-model-features summary {
+  font-size: 12px;
+}
+.replay-model-features ul {
+  margin: 0;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+.capacity-presets {
+  margin: 16px 0 4px;
+}
+.capacity-presets [aria-pressed="true"] {
+  background: var(--mint);
+  border-color: var(--green);
+  color: var(--green);
+}
+.capacity-metrics dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+.capacity-metrics dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}

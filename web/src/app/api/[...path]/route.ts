@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { shouldMineBeforeFinalize } from '@/lib/allocation';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
 import { inrToWei } from '@/lib/format';
+import { issueStepUpChallenge, verifyStepUpChallenge } from '@/lib/step-up-challenge';
 import type { ActivityLogEntry, ApiMutationResponse, DemoStatusResponse, EventDisplayMeta, RoleId } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -107,10 +108,127 @@ const str = (v: unknown, fallback = '') => String(v ?? fallback);
 const num = (v: unknown, fallback = 0) => Number(v ?? fallback);
 const randomBytes32 = () => `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 const role = (b: Body) => str(b.role, 'fanA') as RoleId;
-const invoke = async (args: string[]) => {
-  const result = await runCli(args) as ApiMutationResponse;
+const invoke = async (args: string[], securityDecision?: Record<string, unknown> | null) => {
+  const result = (await runCli(args)) as ApiMutationResponse;
+  if (securityDecision) {
+    result.securityDecision = securityDecision as ApiMutationResponse['securityDecision'];
+  }
   return NextResponse.json(result, { status: httpStatus(result) });
 };
+
+async function evaluateLiveSecurityGate(
+  eventType: 'QUEUE_JOIN' | 'CHECKOUT_ATTEMPT',
+  body: Body,
+  accountId: string,
+): Promise<{ blockedResponse: NextResponse | null; securityDecision: Record<string, unknown> | null }> {
+  if (body.enforceSecurity === false) {
+    return { blockedResponse: null, securityDecision: null };
+  }
+  const activeRole = role(body);
+  const nowIso = new Date().toISOString();
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const eventId = `web_${eventType.toLowerCase()}_${suffix}`;
+  const secEvent = {
+    eventId,
+    timestamp: str(body.timestamp, nowIso),
+    eventType,
+    eventIdempotencyKey: str(body.eventIdempotencyKey, `idem_${eventId}`),
+    accountId,
+    sessionId: str(body.sessionId, `live_sess_${activeRole}`),
+    eventContext: {
+      eventSaleId: str(body.eventSaleId, 'fairtickets_live_sale'),
+      deviceId: body.deviceId ? str(body.deviceId) : `live_dev_${activeRole}`,
+      networkId: body.networkId ? str(body.networkId) : 'live_net_local',
+      paymentTokenHash: body.paymentTokenHash ? str(body.paymentTokenHash) : `live_pay_${activeRole}`,
+    },
+  };
+  const secDecision = await runCli(['security-eval', '--event', JSON.stringify(secEvent)], 15_000);
+  const decision = str(secDecision.decision, 'ALLOW');
+  const reasonsList = Array.isArray(secDecision.reasons) && secDecision.reasons.length > 0
+    ? secDecision.reasons.join(', ')
+    : 'HIGH_RISK';
+
+  if (decision === 'BLOCK') {
+    return {
+      blockedResponse: NextResponse.json(
+        {
+          ok: false,
+          txStatus: 'rejected',
+          txHash: null,
+          errorCode: 'SECURITY_BLOCKED',
+          error: `Blocked by Hybrid Security Engine (${reasonsList})`,
+          securityDecision: secDecision,
+        },
+        { status: 403 },
+      ),
+      securityDecision: secDecision,
+    };
+  }
+
+  const rawResp =
+    body.challengeResponse && typeof body.challengeResponse === 'object'
+      ? (body.challengeResponse as Record<string, unknown>)
+      : null;
+
+  if (rawResp && decision !== 'BLOCK') {
+    const verified = verifyStepUpChallenge({
+      challengeId: str(rawResp.challengeId),
+      token: str(rawResp.token),
+      answer: str(rawResp.answer),
+      accountId,
+      action: eventType,
+    });
+    if (verified.ok) {
+      return { blockedResponse: null, securityDecision: secDecision };
+    }
+    const failId = `web_vfail_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const failEvent = {
+      ...secEvent,
+      eventId: failId,
+      timestamp: new Date().toISOString(),
+      eventType: 'VERIFICATION_FAILED',
+      eventIdempotencyKey: `idem_${failId}`,
+    };
+    const updatedDecision = await runCli(['security-eval', '--event', JSON.stringify(failEvent)], 15_000);
+    const freshChallenge = issueStepUpChallenge(accountId, eventType);
+    return {
+      blockedResponse: NextResponse.json(
+        {
+          ok: false,
+          txStatus: 'rejected',
+          txHash: null,
+          errorCode: 'SECURITY_CHALLENGE_FAILED',
+          error: `Step-up verification failed (${verified.reason || 'Invalid answer'}). Complete the new verification prompt.`,
+          securityDecision: updatedDecision,
+          stepUpChallenge: freshChallenge,
+        },
+        { status: 403 },
+      ),
+      securityDecision: updatedDecision,
+    };
+  }
+
+  if (decision === 'CHALLENGE') {
+    const stepUpChallenge = issueStepUpChallenge(accountId, eventType);
+    return {
+      blockedResponse: NextResponse.json(
+        {
+          ok: false,
+          txStatus: 'rejected',
+          txHash: null,
+          errorCode: 'SECURITY_CHALLENGE_REQUIRED',
+          error: `Step-up verification required by Hybrid Security Engine (${reasonsList})`,
+          securityDecision: secDecision,
+          stepUpChallenge,
+        },
+        { status: 403 },
+      ),
+      securityDecision: secDecision,
+    };
+  }
+
+  return { blockedResponse: null, securityDecision: secDecision };
+}
 
 export async function GET(_req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
@@ -248,45 +366,18 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
         }
       }
       const subject = str(body.subject, `demo-${role(body)}`);
-      if (body.enforceSecurity === true) {
-        const nowIso = new Date().toISOString();
-        const eventId = `web_enter_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        const secEvent = {
-          eventId,
-          timestamp: nowIso,
-          eventType: 'QUEUE_JOIN',
-          eventIdempotencyKey: `idem_${eventId}`,
-          accountId: subject,
-          sessionId: str(body.sessionId, `sess_${role(body)}`),
-          eventContext: {
-            eventSaleId: str(body.eventSaleId, 'live_event'),
-            deviceId: body.deviceId ? str(body.deviceId) : null,
-            networkId: body.networkId ? str(body.networkId) : null,
-            paymentTokenHash: body.paymentTokenHash ? str(body.paymentTokenHash) : null,
-          },
-        };
-        const secDecision = await runCli(['security-eval', '--event', JSON.stringify(secEvent)], 15_000);
-        if (secDecision.decision === 'BLOCK') {
-          return NextResponse.json(
-            {
-              ok: false,
-              txStatus: 'rejected',
-              txHash: null,
-              errorCode: 'SECURITY_BLOCKED',
-              error: `Blocked by Hybrid Security Engine (${Array.isArray(secDecision.reasons) ? secDecision.reasons.join(', ') : 'HIGH_RISK'})`,
-              securityDecision: secDecision,
-            },
-            { status: 403 },
-          );
-        }
-      }
+      const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('QUEUE_JOIN', body, subject);
+      if (blockedResponse) return blockedResponse;
       const enterRes = (await runCli(['enter', ...roleFlags, '--subject', subject])) as ApiMutationResponse;
       if (enterRes.txStatus === 'confirmed' && requestedSeat && (targetRole === 'fanA' || targetRole === 'fanB')) {
         const seats = readSeats();
         seats[requestedSeat] = targetRole;
         writeSeats(seats);
       }
-      return NextResponse.json(enterRes, { status: httpStatus(enterRes) });
+      return NextResponse.json(
+        { ...enterRes, ...(securityDecision ? { securityDecision } : {}) },
+        { status: httpStatus(enterRes) },
+      );
     }
     case 'organiser/advance-and-lock': {
       if (body.seconds !== undefined) {
@@ -368,6 +459,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
     }
     case 'claim': {
       const targetRole = role(body);
+      const accountId = str(body.subject, `demo-${targetRole}-subject`);
+      const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('CHECKOUT_ATTEMPT', body, accountId);
+      if (blockedResponse) return blockedResponse;
       const claimRes = (await runCli(['claim', ...roleFlags])) as ApiMutationResponse;
       if (claimRes.txStatus === 'confirmed' && (targetRole === 'fanA' || targetRole === 'fanB') && fs.existsSync(walletPath())) {
         const st = await runCli(['status']);
@@ -376,10 +470,54 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
         wallets[targetRole] = Math.max(0, (wallets[targetRole] || 0) - priceInr);
         writeWallets(wallets);
       }
+      if (securityDecision) {
+        claimRes.securityDecision = securityDecision as ApiMutationResponse['securityDecision'];
+      }
       return NextResponse.json(claimRes, { status: httpStatus(claimRes) });
     }
     case 'list': return invoke(['list', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
-    case 'buy': return invoke(['buy', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
+    case 'buy': {
+      const targetRole = role(body);
+      const buyPriceInr = computeFacePriceInr(body.priceWei, 3000);
+      if (fs.existsSync(walletPath()) && (targetRole === 'fanA' || targetRole === 'fanB')) {
+        const wallets = readWallets();
+        if ((wallets[targetRole] || 0) < buyPriceInr) {
+          return NextResponse.json(
+            {
+              ok: false,
+              txStatus: 'rejected',
+              txHash: null,
+              error: `Insufficient wallet balance (₹${wallets[targetRole] || 0}). Add at least ₹${buyPriceInr.toLocaleString('en-IN')} to buy this listing.`,
+            },
+            { status: 409 },
+          );
+        }
+      }
+      const accountId = str(body.subject, `demo-${targetRole}-subject`);
+      const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('CHECKOUT_ATTEMPT', body, accountId);
+      if (blockedResponse) return blockedResponse;
+      const buyRes = (await runCli([
+        'buy',
+        ...roleFlags,
+        '--slot',
+        str(body.slot),
+        '--version',
+        str(body.version),
+        '--price',
+        str(body.priceWei),
+      ])) as ApiMutationResponse;
+      if (buyRes.txStatus === 'confirmed' && (targetRole === 'fanA' || targetRole === 'fanB') && fs.existsSync(walletPath())) {
+        const sellerRole = targetRole === 'fanA' ? 'fanB' : 'fanA';
+        const wallets = readWallets();
+        wallets[targetRole] = Math.max(0, (wallets[targetRole] || 0) - buyPriceInr);
+        wallets[sellerRole] = (wallets[sellerRole] || 0) + buyPriceInr;
+        writeWallets(wallets);
+      }
+      if (securityDecision) {
+        buyRes.securityDecision = securityDecision as ApiMutationResponse['securityDecision'];
+      }
+      return NextResponse.json(buyRes, { status: httpStatus(buyRes) });
+    }
     case 'credential/sign': {
       const signed = await runCli(['sign-gate', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), ...(body.expirySeconds ? ['--expiry', str(body.expirySeconds)] : []), ...json]);
       if (!signed.ownerSig) {

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import SecurityVerdictCard from '@/components/SecurityVerdictCard';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
@@ -17,6 +18,7 @@ export default function BookingsPage() {
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [lastGatedAction, setLastGatedAction] = useState<{ endpoint: string; body: Record<string, unknown> } | null>(null);
 
   const isFan = role === 'fanA' || role === 'fanB';
 
@@ -55,10 +57,23 @@ export default function BookingsPage() {
   async function act(endpoint: string, body: Record<string, unknown> = {}) {
     setBusy(true);
     try {
+      const isSecurityGated = endpoint === 'buy';
+      const securityPayload = isSecurityGated
+        ? {
+            subject: `demo-${role}-subject`,
+            sessionId: `live_sess_${role}`,
+            deviceId: `live_dev_${role}`,
+            paymentTokenHash: `live_pay_${role}`,
+            eventSaleId: status?.contract || 'fairtickets_live_sale',
+          }
+        : {};
+      if (isSecurityGated) {
+        setLastGatedAction({ endpoint, body });
+      }
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, ...body }),
+        body: JSON.stringify({ role, ...securityPayload, ...body }),
       });
       setMessage((await r.json()) as ApiMutationResponse);
       await refresh();
@@ -105,6 +120,8 @@ export default function BookingsPage() {
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
   const activeListings = status?.tickets?.filter((t) => t.listed) || [];
   const phase = status?.phase?.toUpperCase() || '';
+  const walletBalanceInr = status?.walletBalancesInr?.[role] ?? 0;
+  const requiredPriceInr = status?.facePriceInr ?? 3000;
 
   return (
     <main className="page">
@@ -121,9 +138,25 @@ export default function BookingsPage() {
           <p className="eyebrow">MY BOOKINGS &amp; PASSES</p>
           <h1>Manage Your Tickets</h1>
         </div>
-        <button className="secondary" onClick={() => void refresh()}>
-          Refresh
-        </button>
+        <div className="actions" style={{ margin: 0 }}>
+          {isFan && (
+            <span className="pill ok">
+              Wallet: ₹{walletBalanceInr.toLocaleString('en-IN')}
+            </span>
+          )}
+          {isFan && (
+            <button
+              className="secondary small-btn"
+              disabled={busy}
+              onClick={() => void act('wallet/topup', { amountInr: requiredPriceInr })}
+            >
+              + Add ₹{requiredPriceInr.toLocaleString('en-IN')}
+            </button>
+          )}
+          <button className="secondary small-btn" onClick={() => void refresh()}>
+            Refresh
+          </button>
+        </div>
       </div>
 
       {!isFan && (
@@ -141,6 +174,18 @@ export default function BookingsPage() {
         result={message}
         busy={busy}
         onResume={() => void act('tx/resume', { scanId: message?.scanId, txHash: message?.txHash })}
+      />
+
+      <SecurityVerdictCard
+        message={message}
+        busy={busy}
+        onSubmitChallenge={(challengeId, token, answer) => {
+          if (!lastGatedAction) return;
+          void act(lastGatedAction.endpoint, {
+            ...lastGatedAction.body,
+            challengeResponse: { challengeId, token, answer },
+          });
+        }}
       />
 
       {isFan && status && (

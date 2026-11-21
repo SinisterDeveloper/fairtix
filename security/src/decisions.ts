@@ -13,6 +13,7 @@ export type ReasonCode =
   | 'QUEUE_BYPASS_ATTEMPT'
   | 'HOLD_LIMIT_EXCEEDED'
   | 'INVENTORY_EXHAUSTED'
+  | 'ACCOUNT_PURCHASE_LIMIT_EXCEEDED'
   | 'CLUSTER_PURCHASE_LIMIT_EXCEEDED'
   | 'ML_BEHAVIORAL_ANOMALY'
   | 'UNSUPERVISED_BEHAVIORAL_ANOMALY';
@@ -50,6 +51,7 @@ export interface RiskDecision {
   reasons: string[];
   decisionId: string;
   hardFailure: boolean;
+  behavioralDecision?: DecisionOutcome;
   clusterSummary?: ClusterSummary;
   supportingEventIds: string[];
   mlScore?: number;
@@ -74,6 +76,7 @@ export interface DecisionAuditRecord {
   riskScore: number;
   reasons: string[];
   hardFailure: boolean;
+  behavioralDecision?: DecisionOutcome;
   ruleContributions: Array<{
     rule: string;
     reason: string;

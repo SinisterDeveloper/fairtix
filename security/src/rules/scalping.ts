@@ -63,7 +63,8 @@ export function evaluateScalpingRule(
     !cluster.isBenignHousehold &&
     cluster.accountCount >= 2
   ) {
-    const projectedTickets = inventory.clusterSoldCount + inventory.clusterActiveHolds + event.quantity;
+    const projectedTickets =
+      inventory.clusterSoldCount + inventory.clusterHeldQuantity - inventory.convertedHoldQuantity + event.quantity;
     if (projectedTickets > config.maxTicketsPerCluster) {
       signals.push({
         rule: 'OAT-005:scalping',

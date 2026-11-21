@@ -28,6 +28,7 @@ import { evaluateScalpingRule } from './rules/scalping.ts';
 
 export interface RiskEngineOptions {
   protectionsEnabled?: boolean;
+  behavioralMode?: 'observe' | 'enforce';
   mlEnabled?: boolean;
   graphOptions?: AccountGraphOptions;
   unsupervisedOptions?: UnsupervisedBaselineOptions;
@@ -64,6 +65,7 @@ export class RiskEngine {
   readonly auditLog: DecisionAuditLog;
   readonly behaviorTracker: SessionBehaviorTracker;
   readonly unsupervisedDetector: UnsupervisedBaselineDetector;
+  private readonly behavioralMode?: 'observe' | 'enforce';
 
   private readonly idempotencyCache = new Map<string, RiskDecision>();
   private totalEventsEvaluated = 0;
@@ -75,6 +77,7 @@ export class RiskEngine {
 
   constructor(options: RiskEngineOptions = {}) {
     this.protectionsEnabled = options.protectionsEnabled ?? true;
+    this.behavioralMode = options.behavioralMode;
     this.mlEnabled = options.mlEnabled ?? true;
     this.graph = new AccountGraph(options.graphOptions);
     this.inventory = new InventoryAbuseGuard();
@@ -201,9 +204,13 @@ export class RiskEngine {
     const hardFailure = uniqueSignals.some((s) => Boolean(s.hardFailure));
     const reasons = uniqueSignals.map((s) => s.reason);
 
-    const rawScore = uniqueSignals.reduce((acc, s) => acc + s.points, 0);
-    const riskScore = hardFailure ? 100 : clampRiskScore(rawScore);
-    const decision = scoreToDecision(riskScore, hardFailure);
+    const behavioralScore = clampRiskScore(
+      uniqueSignals.reduce((score, signal) => score + (signal.hardFailure ? 0 : signal.points), 0)
+    );
+    const behavioralDecision = scoreToDecision(behavioralScore);
+    const riskScore = hardFailure ? 100 : behavioralScore;
+    const decision = hardFailure ? 'BLOCK' : this.behavioralMode === 'observe' ? 'ALLOW' : behavioralDecision;
+    const behavior = this.behavioralMode ? { behavioralDecision } : {};
 
     const supportingSet = new Set<string>([event.eventId]);
     for (const sig of uniqueSignals) {
@@ -233,6 +240,7 @@ export class RiskEngine {
           reasons: ['INVENTORY_EXHAUSTED'],
           decisionId: this.auditLog.nextDecisionId(),
           hardFailure: true,
+          ...behavior,
           clusterSummary,
           supportingEventIds,
         };
@@ -259,6 +267,7 @@ export class RiskEngine {
       reasons,
       decisionId: this.auditLog.nextDecisionId(),
       hardFailure,
+      ...behavior,
       clusterSummary,
       supportingEventIds,
       ...(mlResult
@@ -323,6 +332,7 @@ export class RiskEngine {
       riskScore: result.riskScore,
       reasons: result.reasons,
       hardFailure: result.hardFailure,
+      ...(result.behavioralDecision ? { behavioralDecision: result.behavioralDecision } : {}),
       ruleContributions,
       clusterSummary: result.clusterSummary,
       supportingEventIds: result.supportingEventIds,

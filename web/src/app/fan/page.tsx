@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import StadiumSeating from '@/components/StadiumSeating';
+import SecurityVerdictCard from '@/components/SecurityVerdictCard';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
@@ -21,6 +22,8 @@ export default function FanPage() {
   const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sharedDeviceDemo, setSharedDeviceDemo] = useState(false);
+  const [lastGatedAction, setLastGatedAction] = useState<{ endpoint: string; body: Record<string, unknown> } | null>(null);
   const isFan = role === 'fanA' || role === 'fanB';
 
   async function refresh(): Promise<DemoStatusResponse | null> {
@@ -73,10 +76,23 @@ export default function FanPage() {
   async function act(endpoint: string, body: Record<string, unknown> = {}) {
     setBusy(true);
     try {
+      const isSecurityGated = endpoint === 'enter' || endpoint === 'claim' || endpoint === 'buy';
+      const securityPayload = isSecurityGated
+        ? {
+            subject: strSubject(body.subject),
+            sessionId: `live_sess_${role}`,
+            deviceId: sharedDeviceDemo ? 'shared_bot_dev_demo' : `live_dev_${role}`,
+            paymentTokenHash: sharedDeviceDemo ? 'shared_bot_pay_demo' : `live_pay_${role}`,
+            eventSaleId: status?.contract || 'fairtickets_live_sale',
+          }
+        : {};
+      if (isSecurityGated) {
+        setLastGatedAction({ endpoint, body });
+      }
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, ...body }),
+        body: JSON.stringify({ role, ...securityPayload, ...body }),
       });
       const data = (await r.json()) as ApiMutationResponse;
       setMessage(data);
@@ -101,6 +117,10 @@ export default function FanPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function strSubject(override: unknown) {
+    return typeof override === 'string' && override.trim() ? override.trim() : subject.trim() || `demo-${role}-subject`;
   }
 
   async function credential() {
@@ -261,6 +281,18 @@ export default function FanPage() {
         onResume={() => void act('tx/resume', { scanId: message?.scanId, txHash: message?.txHash })}
       />
 
+      <SecurityVerdictCard
+        message={message}
+        busy={busy}
+        onSubmitChallenge={(challengeId, token, answer) => {
+          if (!lastGatedAction) return;
+          void act(lastGatedAction.endpoint, {
+            ...lastGatedAction.body,
+            challengeResponse: { challengeId, token, answer },
+          });
+        }}
+      />
+
       {(!status || phase.includes('ENTRY')) && (
         <section className="card narrow card-active">
           <div className="card-head">
@@ -302,6 +334,18 @@ export default function FanPage() {
           <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject, seat: selectedSeat })}>
             Enter event
           </button>
+          <details style={{ marginTop: 12 }}>
+            <summary>Security telemetry mode ({sharedDeviceDemo ? 'Shared device · Step-Up' : 'Normal fan'})</summary>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                style={{ width: 'auto' }}
+                checked={sharedDeviceDemo}
+                onChange={(e) => setSharedDeviceDemo(e.target.checked)}
+              />
+              Simulate shared bot device/payment across accounts (triggers Step-Up Challenge)
+            </label>
+          </details>
         </section>
       )}
 
