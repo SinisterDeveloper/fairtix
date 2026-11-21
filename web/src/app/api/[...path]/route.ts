@@ -3,6 +3,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { shouldMineBeforeFinalize } from '@/lib/allocation';
+import { readCapacityBenchmarkLogs } from '@/lib/capacity-log-store';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
 import { inrToWei } from '@/lib/format';
 import { issueStepUpChallenge, verifyStepUpChallenge } from '@/lib/step-up-challenge';
@@ -69,6 +70,27 @@ function readWallets(): Record<string, number> {
 function writeWallets(wallets: Record<string, number>) {
   try {
     fs.writeFileSync(walletPath(), JSON.stringify(wallets, null, 2));
+  } catch {}
+}
+
+function seatsPath() {
+  const stateTag = (process.env.FAIRTICKETS_STATE_DIR || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return nodePath.join(os.tmpdir(), `fairtickets-seats-${stateTag}.json`);
+}
+
+function readSeats(): Record<string, string> {
+  try {
+    const p = seatsPath();
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function writeSeats(seats: Record<string, string>) {
+  try {
+    fs.writeFileSync(seatsPath(), JSON.stringify(seats, null, 2));
   } catch {}
 }
 
@@ -209,7 +231,7 @@ async function evaluateLiveSecurityGate(
   return { blockedResponse: null, securityDecision: secDecision };
 }
 
-export async function GET(_req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
+export async function GET(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   if (path.join('/') === 'status') {
     const status = await runCli(['status']);
@@ -217,6 +239,7 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
       status.facePriceInr = computeFacePriceInr(status.facePriceWei, Number(status.facePriceInr || 3000));
       status.eventMeta = readServerEventMeta();
       status.walletBalancesInr = readWallets();
+      status.takenSeats = readSeats();
     }
     return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
   }
@@ -266,12 +289,11 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
   if (path.join('/') === 'admin/logs') {
     const stateDir = process.env.FAIRTICKETS_STATE_DIR || nodePath.resolve(process.cwd(), '..', 'artifacts');
     const logPath = nodePath.join(stateDir, 'activity-log.ndjson');
-    let logs: ActivityLogEntry[] = [];
+    let activityLogs: ActivityLogEntry[] = [];
     try {
       if (fs.existsSync(logPath)) {
         const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
-        logs = lines
-          .slice(-100)
+        activityLogs = lines
           .reverse()
           .map((line) => {
             try {
@@ -282,14 +304,35 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
           });
       }
     } catch {
-      logs = [];
+      activityLogs = [];
     }
+    const source = req.nextUrl.searchParams.get('source') || 'all';
+    const capacityLogs = source === 'activity' ? [] : readCapacityBenchmarkLogs();
+    const combined =
+      source === 'capacity'
+        ? capacityLogs
+        : source === 'activity'
+          ? activityLogs
+          : [...activityLogs, ...capacityLogs].sort((a, b) =>
+              String(b.timestamp || '').localeCompare(String(a.timestamp || '')),
+            );
+    const rawLimit = Number(req.nextUrl.searchParams.get('limit') || 100);
+    const limit = rawLimit === 500 || rawLimit === 1000 ? rawLimit : 100;
+    const totalLogs = combined.length;
+    const totalPages = Math.max(1, Math.ceil(totalLogs / limit));
+    const page = Math.max(1, Math.min(totalPages, Number(req.nextUrl.searchParams.get('page') || 1) || 1));
+    const start = (page - 1) * limit;
+    const logs = combined.slice(start, start + limit);
     const alertsRes = await runCli(['alerts']);
     return NextResponse.json({
       ok: true,
       logs,
+      totalLogs,
+      page,
+      limit,
+      totalPages,
       alerts: Array.isArray(alertsRes.alerts) ? alertsRes.alerts : [],
-      activityCount: Number(alertsRes.activityCount ?? logs.length),
+      activityCount: Number(alertsRes.activityCount ?? activityLogs.length),
       stateDir,
     });
   }
@@ -333,10 +376,29 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
           );
         }
       }
+      const requestedSeat = body.seat ? String(Math.max(1, Math.floor(num(body.seat, 1)))) : null;
+      if (requestedSeat) {
+        const seats = readSeats();
+        if (seats[requestedSeat] && seats[requestedSeat] !== targetRole) {
+          return NextResponse.json(
+            { ok: false, txStatus: 'rejected', txHash: null, error: `Seat #S${requestedSeat} is already occupied. Please select another seat.` },
+            { status: 409 },
+          );
+        }
+      }
       const subject = str(body.subject, `demo-${role(body)}`);
       const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('QUEUE_JOIN', body, subject);
       if (blockedResponse) return blockedResponse;
-      return invoke(['enter', ...roleFlags, '--subject', subject, ...json], securityDecision);
+      const enterRes = (await runCli(['enter', ...roleFlags, '--subject', subject])) as ApiMutationResponse;
+      if (enterRes.txStatus === 'confirmed' && requestedSeat && (targetRole === 'fanA' || targetRole === 'fanB')) {
+        const seats = readSeats();
+        seats[requestedSeat] = targetRole;
+        writeSeats(seats);
+      }
+      return NextResponse.json(
+        { ...enterRes, ...(securityDecision ? { securityDecision } : {}) },
+        { status: httpStatus(enterRes) },
+      );
     }
     case 'organiser/advance-and-lock': {
       if (body.seconds !== undefined) {
@@ -388,6 +450,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
           dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
         });
         writeWallets({ fanA: 0, fanB: 0 });
+      writeSeats({});
       }
       return NextResponse.json(initRes, { status: httpStatus(initRes) });
     }
@@ -404,6 +467,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       const resetRes = await runCli(['reset-demo'], 15_000);
       clearServerEventMeta();
       writeWallets({ fanA: 0, fanB: 0 });
+      writeSeats({});
       return NextResponse.json(resetRes, { status: resetRes.ok === false ? 500 : 200 });
     }
     case 'organiser/draw': {
