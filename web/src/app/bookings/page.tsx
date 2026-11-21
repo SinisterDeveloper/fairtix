@@ -210,34 +210,18 @@ export default function BookingsPage() {
               <input value={price} onChange={(e) => setPrice(e.target.value)} />
             </label>
             <div style={{ alignSelf: 'end' }}>
-              <div className="preset-row" style={{ marginBottom: 0 }}>
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  onClick={() => setPrice(String(Math.round(((status?.facePriceInr || 3000) * 80) / 100)))}
-                >
-                  80%
-                </button>
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  onClick={() => setPrice(String(status?.facePriceInr || 3000))}
-                >
-                  100% Cap
-                </button>
-                <button
-                  disabled={busy || !phase.includes('RESALE')}
-                  onClick={() =>
-                    void act('list', {
-                      slot: heldTicket.slot,
-                      version: heldTicket.version,
-                      priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
-                    })
-                  }
-                >
-                  List for resale
-                </button>
-              </div>
+              <button
+                disabled={busy || !phase.includes('RESALE')}
+                onClick={() =>
+                  void act('list', {
+                    slot: heldTicket.slot,
+                    version: heldTicket.version,
+                    priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                  })
+                }
+              >
+                List for resale
+              </button>
             </div>
           </div>
           {!phase.includes('RESALE') && (

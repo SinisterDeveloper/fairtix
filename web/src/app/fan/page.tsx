@@ -360,18 +360,6 @@ export default function FanPage() {
             <input value={price} onChange={(e) => setPrice(e.target.value)} />
           </label>
 
-          <div className="preset-row">
-            <button type="button" className="secondary small-btn" onClick={() => applyPriceRatio(80, 100)}>
-              80% (valid)
-            </button>
-            <button type="button" className="secondary small-btn" onClick={() => applyPriceRatio(100, 100)}>
-              Max cap (100%)
-            </button>
-            <button type="button" className="secondary small-btn" onClick={() => applyPriceRatio(120, 100)}>
-              120% (test reject)
-            </button>
-          </div>
-
           <div className="actions" style={{ marginBottom: 0 }}>
             <button
               disabled={!isFan || busy}
