@@ -28,9 +28,12 @@ export default function OrganiserPage() {
   const [busy, setBusy] = useState(false);
   const [eventTitle, setEventTitle] = useState(DEFAULT_EVENT_META.title);
   const [eventVenue, setEventVenue] = useState(DEFAULT_EVENT_META.venue);
+  const [eventDate, setEventDate] = useState(DEFAULT_EVENT_META.dateLabel);
   const [newCapacity, setNewCapacity] = useState('2');
   const [newQueueSeconds, setNewQueueSeconds] = useState('600');
   const [newPriceInr, setNewPriceInr] = useState('3000');
+
+  const [metaSavedMsg, setMetaSavedMsg] = useState('');
 
   async function refresh() {
     try {
@@ -43,12 +46,25 @@ export default function OrganiserPage() {
       const aJson = (await aRes.json()) as AlertsPayload;
       const secJson = (await secRes.json()) as SecurityStatusResponse;
       if (!sRes.ok || sJson.ok === false) {
-        throw new Error(sJson.error || 'Could not load chain state.');
+        const msg = sJson.error || 'No active event.';
+        if (msg.toLowerCase().includes('missing') || msg.toLowerCase().includes('init-demo')) {
+          setStatus(null);
+          setAlertsData(aJson);
+          if (secRes.ok && secJson.ok) setSecurityStatus(secJson);
+          setStatusError('');
+          return;
+        }
+        throw new Error(msg);
       }
       setStatus(sJson);
       setAlertsData(aJson);
       if (secRes.ok && secJson.ok) setSecurityStatus(secJson);
       setStatusError('');
+      if (sJson.eventMeta) {
+        setEventTitle((prev) => prev || sJson.eventMeta!.title);
+        setEventVenue((prev) => prev || sJson.eventMeta!.venue);
+        setEventDate((prev) => prev || sJson.eventMeta!.dateLabel);
+      }
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : 'Could not load organiser state.');
     }
@@ -70,6 +86,7 @@ export default function OrganiserPage() {
     const meta = loadEventMeta();
     setEventTitle(meta.title);
     setEventVenue(meta.venue);
+    setEventDate(meta.dateLabel);
     void refresh();
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
@@ -77,23 +94,69 @@ export default function OrganiserPage() {
 
   async function createEvent() {
     setBusy(true);
+    setMetaSavedMsg('');
     try {
-      saveEventMeta({
+      const meta = {
         title: eventTitle.trim() || DEFAULT_EVENT_META.title,
         venue: eventVenue.trim() || DEFAULT_EVENT_META.venue,
-        dateLabel: 'Live Event',
-      });
+        dateLabel: eventDate.trim() || DEFAULT_EVENT_META.dateLabel,
+      };
+      saveEventMeta(meta);
       const r = await fetch('/api/organiser/create-event', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          capacity: Number(newCapacity),
-          entryWindowSeconds: Number(newQueueSeconds),
-          facePriceInr: Number(newPriceInr),
+          ...meta,
+          capacity: Math.max(1, Math.min(50, Number(newCapacity) || 2)),
+          entryWindowSeconds: Math.max(30, Math.min(86400, Number(newQueueSeconds) || 600)),
+          facePriceInr: Math.max(100, Number(newPriceInr) || 3000),
         }),
       });
-      setResult((await r.json()) as ApiMutationResponse);
+      const resJson = (await r.json()) as ApiMutationResponse;
+      setResult(resJson);
+      if (resJson.ok) setStatusError('');
       await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveDisplayDetails() {
+    setBusy(true);
+    setMetaSavedMsg('');
+    try {
+      const meta = {
+        title: eventTitle.trim() || DEFAULT_EVENT_META.title,
+        venue: eventVenue.trim() || DEFAULT_EVENT_META.venue,
+        dateLabel: eventDate.trim() || DEFAULT_EVENT_META.dateLabel,
+      };
+      saveEventMeta(meta);
+      const r = await fetch('/api/organiser/save-meta', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(meta),
+      });
+      if (r.ok) {
+        setMetaSavedMsg('Display details saved.');
+        await refresh();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetEvent() {
+    setBusy(true);
+    setMetaSavedMsg('');
+    try {
+      const r = await fetch('/api/organiser/reset-event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      setResult((await r.json()) as ApiMutationResponse);
+      setStatus(null);
+      setStatusError('');
     } finally {
       setBusy(false);
     }
@@ -173,10 +236,10 @@ export default function OrganiserPage() {
 
       <section className="card">
         <div className="card-head">
-          <h2>Create new event &amp; launch booking queue</h2>
-          <span className="pill">Replaces current demo event</span>
+          <h2>Create &amp; manage event</h2>
+          <span className="pill">{status ? 'Active event live' : 'No active event'}</span>
         </div>
-        <div className="inline-fields">
+        <div className="metrics-grid">
           <label>
             Event name
             <input value={eventTitle} disabled={busy} onChange={(e) => setEventTitle(e.target.value)} />
@@ -184,6 +247,10 @@ export default function OrganiserPage() {
           <label>
             Venue
             <input value={eventVenue} disabled={busy} onChange={(e) => setEventVenue(e.target.value)} />
+          </label>
+          <label>
+            Date / schedule
+            <input value={eventDate} disabled={busy} onChange={(e) => setEventDate(e.target.value)} />
           </label>
         </div>
         <div className="metrics-grid">
@@ -221,9 +288,23 @@ export default function OrganiserPage() {
           </label>
         </div>
         <div className="actions" style={{ marginTop: 8, marginBottom: 0 }}>
-          <button disabled={busy} className="secondary" onClick={() => void createEvent()}>
+          <button disabled={busy} onClick={() => void createEvent()}>
             {busy ? 'Creating event…' : 'Create event & open queue'}
           </button>
+          <button
+            type="button"
+            disabled={busy}
+            className="secondary"
+            onClick={() => void saveDisplayDetails()}
+          >
+            Save display details
+          </button>
+          {status && (
+            <button type="button" disabled={busy} className="secondary" onClick={() => void resetEvent()}>
+              Close &amp; clear event
+            </button>
+          )}
+          {metaSavedMsg && <span className="pill ok">{metaSavedMsg}</span>}
         </div>
       </section>
 
@@ -273,7 +354,7 @@ export default function OrganiserPage() {
         <div className="step-actions">
           <div className={`step-action ${activeStep === 1 ? 'step-action-active' : ''}`}>
             <button
-              disabled={busy}
+              disabled={busy || !status}
               className={activeStep === 1 ? '' : 'secondary'}
               onClick={() => void act('organiser/advance-and-lock')}
             >
@@ -286,7 +367,7 @@ export default function OrganiserPage() {
           </div>
           <div className={`step-action ${activeStep === 2 ? 'step-action-active' : ''}`}>
             <button
-              disabled={busy}
+              disabled={busy || !status}
               className={activeStep === 2 ? '' : 'secondary'}
               onClick={() => void act('organiser/draw')}
             >
@@ -299,7 +380,7 @@ export default function OrganiserPage() {
           </div>
           <div className={`step-action ${activeStep === 3 ? 'step-action-active' : ''}`}>
             <button
-              disabled={busy}
+              disabled={busy || !status}
               className={activeStep === 3 ? '' : 'secondary'}
               onClick={() => void act('organiser/advance-time', { seconds: 301 })}
             >
@@ -309,7 +390,7 @@ export default function OrganiserPage() {
           </div>
           <div className={`step-action ${activeStep === 4 ? 'step-action-active' : ''}`}>
             <button
-              disabled={busy}
+              disabled={busy || !status}
               className={activeStep === 4 ? '' : 'secondary'}
               onClick={() => void act('withdraw')}
             >

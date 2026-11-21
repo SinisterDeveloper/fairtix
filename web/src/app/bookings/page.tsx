@@ -1,12 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export default function BookingsPage() {
+  const router = useRouter();
   const [role, setRole] = useState<RoleId>('fanA');
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
@@ -89,6 +91,7 @@ export default function BookingsPage() {
         ];
         setTray(next);
         localStorage.setItem('fairtickets-credentials', JSON.stringify(next));
+        router.push('/gate');
       }
     } finally {
       setBusy(false);
@@ -96,6 +99,7 @@ export default function BookingsPage() {
   }
 
   const activeAccount = status?.roles?.[role];
+  const liveMeta = status?.eventMeta || eventMeta;
   const activeAddr = activeAccount?.address?.toLowerCase() || '';
   const isWinner = Boolean(activeAddr && status?.winners?.some((w) => w.toLowerCase() === activeAddr));
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
@@ -150,9 +154,9 @@ export default function BookingsPage() {
             <div className="ticket-stub">
               <div className="ticket-stub-main">
                 <span className="eyebrow">CONFIRMED BOOKING</span>
-                <h3 style={{ margin: 0 }}>{eventMeta.title}</h3>
+                <h3 style={{ margin: 0 }}>{liveMeta.title}</h3>
                 <p className="meta" style={{ margin: 0 }}>
-                  {eventMeta.venue} · {eventMeta.dateLabel}
+                  {liveMeta.venue} · {liveMeta.dateLabel}
                 </p>
                 <p style={{ margin: '6px 0 0' }}>
                   <strong>Seat #{heldTicket.slot}</strong> · Pass <code>v{heldTicket.version}</code> ·
@@ -168,11 +172,8 @@ export default function BookingsPage() {
               </div>
               <div className="ticket-stub-side">
                 <button disabled={busy} onClick={() => void signPass(heldTicket.slot, heldTicket.version)}>
-                  Generate Gate Pass
+                  Get QR Pass
                 </button>
-                <Link className="small-link" href="/gate">
-                  Show at Gate →
-                </Link>
               </div>
             </div>
           ) : (
@@ -209,34 +210,18 @@ export default function BookingsPage() {
               <input value={price} onChange={(e) => setPrice(e.target.value)} />
             </label>
             <div style={{ alignSelf: 'end' }}>
-              <div className="preset-row" style={{ marginBottom: 0 }}>
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  onClick={() => setPrice(String(Math.round(((status?.facePriceInr || 3000) * 80) / 100)))}
-                >
-                  80%
-                </button>
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  onClick={() => setPrice(String(status?.facePriceInr || 3000))}
-                >
-                  100% Cap
-                </button>
-                <button
-                  disabled={busy || !phase.includes('RESALE')}
-                  onClick={() =>
-                    void act('list', {
-                      slot: heldTicket.slot,
-                      version: heldTicket.version,
-                      priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
-                    })
-                  }
-                >
-                  List for resale
-                </button>
-              </div>
+              <button
+                disabled={busy || !phase.includes('RESALE')}
+                onClick={() =>
+                  void act('list', {
+                    slot: heldTicket.slot,
+                    version: heldTicket.version,
+                    priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                  })
+                }
+              >
+                List for resale
+              </button>
             </div>
           </div>
           {!phase.includes('RESALE') && (
@@ -276,11 +261,23 @@ export default function BookingsPage() {
 
       <section className="card">
         <div className="card-head">
-          <h2>Saved Entry Passes &amp; Wallet Credit</h2>
+          <h2>Saved Entry Passes &amp; Wallet</h2>
           {isFan && status && (
-            <button disabled={busy} className="secondary small-btn" onClick={() => void act('withdraw')}>
-              Withdraw Credit ({formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr)})
-            </button>
+            <div className="actions" style={{ margin: 0 }}>
+              <span className="pill ok">
+                Wallet: ₹{(status.walletBalancesInr?.[role] ?? 0).toLocaleString('en-IN')}
+              </span>
+              <button
+                disabled={busy}
+                className="secondary small-btn"
+                onClick={() => void act('wallet/topup', { amountInr: status.facePriceInr ?? 3000 })}
+              >
+                + Add ₹{(status.facePriceInr ?? 3000).toLocaleString('en-IN')}
+              </button>
+              <button disabled={busy} className="secondary small-btn" onClick={() => void act('withdraw')}>
+                Withdraw Credit ({formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr)})
+              </button>
+            </div>
           )}
         </div>
         {tray.length > 0 ? (

@@ -1,9 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import LifecycleStepper from '@/components/LifecycleStepper';
+import StadiumSeating from '@/components/StadiumSeating';
 import TxStatusBanner from '@/components/TxStatusBanner';
-import { describeAllocation } from '@/lib/allocation';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
@@ -13,6 +12,7 @@ export default function FanPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [subject, setSubject] = useState('fan-a-subject');
   const [slot, setSlot] = useState('1');
+  const [selectedSeat, setSelectedSeat] = useState(1);
   const [version, setVersion] = useState('1');
   const [price, setPrice] = useState('2400');
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
@@ -159,13 +159,16 @@ export default function FanPage() {
   }
 
   const activeAccount = status?.roles?.[role];
+  const liveMeta = status?.eventMeta || eventMeta;
   const activeAddr = activeAccount?.address?.toLowerCase() || '';
   const isWinner = Boolean(activeAddr && status?.winners?.some((w) => w.toLowerCase() === activeAddr));
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
   const activeListings = status?.tickets?.filter((t) => t.listed) || [];
   const phase = status?.phase?.toUpperCase() || '';
-  const allocationInfo = describeAllocation(status);
   const enteredInfo = status?.contract ? enteredByContract[status.contract.toLowerCase()]?.[role] : undefined;
+  const walletBalanceInr = status?.walletBalancesInr?.[role] ?? 0;
+  const requiredPriceInr = status?.facePriceInr ?? 3000;
+  const hasEnoughBalance = walletBalanceInr >= requiredPriceInr;
 
   useEffect(() => {
     if (heldTicket) {
@@ -217,8 +220,8 @@ export default function FanPage() {
 
       <div className="card-head">
         <div>
-          <p className="eyebrow">BOOK TICKETS · {eventMeta.venue.toUpperCase()}</p>
-          <h1>{eventMeta.title}</h1>
+          <p className="eyebrow">BOOK TICKETS · {liveMeta.venue.toUpperCase()}</p>
+          <h1>{liveMeta.title}</h1>
         </div>
         <Link className="button secondary small-btn" href="/bookings">
           Manage Bookings →
@@ -239,66 +242,31 @@ export default function FanPage() {
           <strong>{isFan ? fanQueueStatus : 'Select Fan A or Fan B'}</strong>
         </div>
         <div>
-          <span>Tickets booked · Credit</span>
+          <span>Wallet balance</span>
           <strong>
-            {status ? `${status.issuedCount}/${status.capacity}` : '—'} ·{' '}
-            {status ? formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr) : '₹0'}
+            ₹{walletBalanceInr.toLocaleString('en-IN')}
           </strong>
         </div>
-        <div style={{ alignSelf: 'center', justifySelf: 'end' }}>
-          <button className="secondary" onClick={() => void refresh()}>
-            Refresh bookings
+        <div style={{ alignSelf: 'center', justifySelf: 'end', display: 'flex', gap: 8 }}>
+          {isFan && (
+            <button
+              className="secondary small-btn"
+              disabled={busy}
+              onClick={() => void act('wallet/topup', { amountInr: requiredPriceInr })}
+            >
+              + Add ₹{requiredPriceInr.toLocaleString('en-IN')}
+            </button>
+          )}
+          <button className="secondary small-btn" onClick={() => void refresh()}>
+            Refresh
           </button>
         </div>
       </section>
-
-      <LifecycleStepper phase={status?.phase} context="fan" />
 
       {!isFan && (
         <p className="role-warning" role="status">
           Choose Fan A or Fan B in the role selector to use fan actions.
         </p>
-      )}
-      {isFan && status && (
-        <div className="flow-callout">
-          <span>
-            {phase.includes('ENTRY')
-              ? enteredInfo
-                ? 'Entry confirmed in queue. Switch to the other fan to enter, or open Organiser to close entry.'
-                : 'Entry is open — click "Enter event" below to join the ticket queue.'
-              : phase.includes('DRAW')
-                ? 'Entry is closed. Go to Organiser to lock allocation and finalize reservations.'
-                : phase.includes('CLAIM')
-                  ? isWinner && !heldTicket
-                    ? 'You have a reservation! Click "Claim reserved ticket" below.'
-                    : heldTicket
-                      ? 'Ticket claimed! Sign a v1 gate pass now, or advance to Resale on Organiser.'
-                      : 'No reservation for this role. Switch to the reserved fan or advance to Resale.'
-                  : phase.includes('RESALE')
-                    ? heldTicket && !heldTicket.listed
-                      ? 'You hold a ticket — test 120% (rejected) or list at 80%/100% for resale.'
-                      : !heldTicket && activeListings.length > 0
-                        ? 'A resale listing is live! Click "Buy listing" to purchase at the capped price.'
-                        : heldTicket
-                          ? 'Ticket listed or updated — sign a gate pass for your current version, then advance to Gate.'
-                          : 'Resale window is open.'
-                    : phase.includes('GATE')
-                      ? heldTicket
-                        ? 'Venue Gate is open! Sign a pass for your current version, then open Gate to redeem.'
-                        : 'Venue Gate is open — take a saved pass to the Gate tab.'
-                      : 'Event closed. Withdraw any remaining proceeds below.'}
-          </span>
-          {(phase.includes('DRAW') || (phase.includes('CLAIM') && heldTicket) || (phase.includes('RESALE') && heldTicket)) && (
-            <Link className="small-link" href="/organiser">
-              Open Organiser →
-            </Link>
-          )}
-          {phase.includes('GATE') && (
-            <Link className="small-link" href="/gate">
-              Open Gate Scanner →
-            </Link>
-          )}
-        </div>
       )}
       {statusError && (
         <p className="role-warning" role="alert">
@@ -393,73 +361,118 @@ export default function FanPage() {
         </section>
       )}
 
-      <section className="grid">
-        <article className={`card ${phase.includes('ENTRY') ? 'card-active' : ''}`}>
+      {(!status || phase.includes('ENTRY')) && (
+        <section className="card narrow card-active">
           <div className="card-head">
-            <h2>1. Join the ticket queue</h2>
-            {phase.includes('ENTRY') && <span className="pill ok">Active phase</span>}
+            <h2>Join Queue</h2>
+            <span className="pill ok">Seat #S{selectedSeat}</span>
           </div>
-          <p>
-            {allocationInfo.mode === 'queue_by_entry_block' ? (
-              <>
-                Each verified person gets <strong>one queue entry</strong>. Earlier blocks get
-                priority; only a batch of entries mined in the same block that exceeds remaining
-                capacity enters a lottery. Re-submitting the same subject or wallet is rejected
-                on-chain.
-              </>
-            ) : (
-              <>
-                Each verified person gets <strong>one entry</strong>. Re-submitting the same subject
-                or wallet is rejected on-chain.
-              </>
-            )}
-          </p>
+          {status && (
+            <StadiumSeating
+              capacity={status.capacity}
+              tickets={status.tickets}
+              selectedSeat={selectedSeat}
+              onSelectSeat={(num) => {
+                setSelectedSeat(num);
+                setSlot(String(num));
+              }}
+            />
+          )}
           {isFan && status && (
             <p className="meta">
-              Queue status: <strong>{fanQueueStatus}</strong>
+              Status: <strong>{fanQueueStatus}</strong>
             </p>
           )}
-          <label>
-            Demo subject
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} />
-          </label>
-          <button disabled={!isFan || busy} onClick={() => void act('enter', { subject })}>
+          {isFan && status && !hasEnoughBalance && (
+            <div className="role-warning" style={{ margin: '10px 0' }}>
+              Wallet balance ₹{walletBalanceInr.toLocaleString('en-IN')} is below ₹{requiredPriceInr.toLocaleString('en-IN')}.{' '}
+              <button
+                type="button"
+                className="small-btn"
+                style={{ marginLeft: 8 }}
+                disabled={busy}
+                onClick={() => void act('wallet/topup', { amountInr: requiredPriceInr })}
+              >
+                Add ₹{requiredPriceInr.toLocaleString('en-IN')}
+              </button>
+            </div>
+          )}
+          <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject })}>
             Enter event
           </button>
-        </article>
+        </section>
+      )}
 
-        <article className={`card ${phase.includes('CLAIM') || phase.includes('RESALE') ? 'card-active' : ''}`}>
+      {status && phase.includes('DRAW') && (
+        <section className="card narrow">
           <div className="card-head">
-            <h2>2. Claim or trade</h2>
-            {(phase.includes('CLAIM') || phase.includes('RESALE')) && (
-              <span className="pill ok">Active phase</span>
-            )}
+            <h2>Finalizing Reservations</h2>
+            <span className="pill">Queue Closed</span>
           </div>
-          <p>
-            Reserved fans claim at face price (
-            {status ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
-            ). During resale, holders can list at or below the on-chain cap.
+          <p className="meta">
+            The queue is closed. Reservations are being finalized by the organiser.
           </p>
-          {isFan && status && !heldTicket && (
+        </section>
+      )}
+
+      {status && phase.includes('CLAIM') && (
+        <section className="card narrow card-active">
+          <div className="card-head">
+            <h2>Claim if Selected</h2>
+            <span className="pill ok">
+              {formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)}
+            </span>
+          </div>
+          <StadiumSeating
+            capacity={status.capacity}
+            tickets={status.tickets}
+            selectedSeat={heldTicket ? heldTicket.slot : selectedSeat}
+            onSelectSeat={(num) => {
+              setSelectedSeat(num);
+              setSlot(String(num));
+            }}
+          />
+          {isFan && (
             <p className="meta">
-              {isWinner
-                ? 'Reservation available to claim — click "Claim reserved ticket" below.'
-                : status.drawn
-                  ? 'No reservation after finalization for this wallet.'
-                  : status.drawLocked
-                    ? 'Allocation pending — waiting for the organiser to finalize reservations.'
-                    : 'Reservations are finalized after entry closes.'}
+              {heldTicket
+                ? `Booked Seat #${heldTicket.slot} (v${heldTicket.version})`
+                : isWinner
+                  ? 'You were selected! Claim your ticket below.'
+                  : 'No reservation for this account.'}
             </p>
           )}
+          <div className="actions" style={{ marginBottom: 0 }}>
+            {isFan && isWinner && !heldTicket && (
+              <button disabled={busy} onClick={() => void act('claim')}>
+                Claim reserved ticket
+              </button>
+            )}
+            {heldTicket && (
+              <Link className="button secondary" href="/bookings">
+                Go to My Bookings (QR) →
+              </Link>
+            )}
+          </div>
+        </section>
+      )}
+
+      {status && phase.includes('RESALE') && (
+        <section className="card narrow card-active">
+          <div className="card-head">
+            <h2>Capped Resale</h2>
+            <span className="pill ok">
+              Max {formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr)}
+            </span>
+          </div>
 
           {activeListings.length > 0 && (
             <div className="listing-box">
-              <strong>Live resale listing:</strong>
+              <strong>Available listing:</strong>
               {activeListings.map((t) => (
                 <div key={t.slot} className="listing-row">
                   <span>
-                    Slot #{t.slot} (v{t.version}) ·{' '}
-                    {formatWeiToInr(t.resalePriceWei, status?.facePriceWei, status?.facePriceInr)}
+                    Seat #{t.slot} (v{t.version}) ·{' '}
+                    {formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr)}
                   </span>
                   <button
                     type="button"
@@ -467,7 +480,7 @@ export default function FanPage() {
                     onClick={() => {
                       setSlot(String(t.slot));
                       setVersion(String(t.version));
-                      const inrLabel = formatWeiToInr(t.resalePriceWei, status?.facePriceWei, status?.facePriceInr).replace(/[₹,\s]/g, '');
+                      const inrLabel = formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr).replace(/[₹,\s]/g, '');
                       setPrice(inrLabel || '2400');
                     }}
                   >
@@ -489,69 +502,20 @@ export default function FanPage() {
             </label>
           </div>
 
-          {heldTicket && (
-            <div className="preset-row">
-              <button
-                type="button"
-                className="secondary small-btn"
-                onClick={() => {
-                  setSlot(String(heldTicket.slot));
-                  setVersion(String(heldTicket.version));
-                }}
-              >
-                Use my ticket (Slot #{heldTicket.slot}, v{heldTicket.version})
-              </button>
-            </div>
-          )}
-
           <label>
             Resale price (INR)
             <input value={price} onChange={(e) => setPrice(e.target.value)} />
           </label>
 
-          {status && (
-            <div className="preset-row">
-              <span className="meta">Quick price:</span>
-              <button
-                type="button"
-                className="secondary small-btn"
-                onClick={() => applyPriceRatio(80, 100)}
-              >
-                80% (valid)
-              </button>
-              <button
-                type="button"
-                className="secondary small-btn"
-                onClick={() => applyPriceRatio(100, 100)}
-              >
-                Max cap (100%)
-              </button>
-              <button
-                type="button"
-                className="secondary small-btn"
-                onClick={() => applyPriceRatio(120, 100)}
-              >
-                120% (test reject)
-              </button>
-            </div>
-          )}
-
-          <div className="actions">
+          <div className="actions" style={{ marginBottom: 0 }}>
             <button
               disabled={!isFan || busy}
-              className={phase.includes('CLAIM') && isWinner && !heldTicket ? '' : 'secondary'}
-              onClick={() => void act('claim')}
-            >
-              Claim reserved ticket
-            </button>
-            <button
-              disabled={!isFan || busy}
-              className={phase.includes('RESALE') && heldTicket && !heldTicket.listed ? '' : 'secondary'}
+              className={heldTicket && !heldTicket.listed ? '' : 'secondary'}
               onClick={() =>
                 void act('list', {
                   slot: Number(slot),
                   version: Number(version),
-                  priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                  priceWei: inrToWei(price, status.facePriceWei, status.facePriceInr),
                 })
               }
             >
@@ -559,166 +523,54 @@ export default function FanPage() {
             </button>
             <button
               disabled={!isFan || busy}
-              className={phase.includes('RESALE') && !heldTicket && activeListings.length > 0 ? '' : 'secondary'}
+              className={!heldTicket && activeListings.length > 0 ? '' : 'secondary'}
               onClick={() =>
                 void act('buy', {
                   slot: Number(slot),
                   version: Number(version),
-                  priceWei: inrToWei(price, status?.facePriceWei, status?.facePriceInr),
+                  priceWei: inrToWei(price, status.facePriceWei, status.facePriceInr),
                 })
               }
             >
               Buy listing
             </button>
           </div>
-          <p>
-            Max resale price:{' '}
-            <strong>
-              {status ? formatWeiToInr(status.maxResalePriceWei, status.facePriceWei, status.facePriceInr) : '—'}
-            </strong>
-            . Try a higher INR amount (for example 30000) to see the cap enforced.
-          </p>
-        </article>
+        </section>
+      )}
 
-        <article className={`card ${phase.includes('GATE') ? 'card-active' : ''}`}>
+      {status && (phase.includes('GATE') || phase.includes('CLOSED')) && (
+        <section className="card narrow card-active">
           <div className="card-head">
-            <h2>3. Gate passes &amp; proceeds</h2>
-            {phase.includes('GATE') && <span className="pill ok">Active phase</span>}
+            <h2>Get QR Pass</h2>
+            <span className="pill ok">Doors Open</span>
           </div>
-          <p>
-            Sign a short-lived gate pass for your ticket. Older passes (like <code>v1</code> after a
-            resale) stay saved so you can verify they are rejected at the gate.
-          </p>
-          <div className="actions" style={{ marginTop: 12 }}>
+          <div className="actions">
             <button disabled={!isFan || busy} onClick={() => void credential()}>
               Sign and save credential
             </button>
+            <Link className="button secondary" href="/bookings">
+              Open My Bookings →
+            </Link>
             <button disabled={!isFan || busy} className="secondary" onClick={() => void act('withdraw')}>
               Withdraw proceeds
             </button>
           </div>
-          {tray.length > 0 ? (
-            <>
-              <ul className="pass-list">
-                {tray.map((c, i) => {
-                  const isOldEvent =
-                    Boolean(status?.contract && c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase());
-                  return (
-                    <li key={i} className="pass-item">
-                      <div>
-                        <strong>{String(c.label)}</strong>
-                        <span className="meta">
-                          {' '}
-                          · Slot #{String(c.slot)} · v{String(c.version)}
-                        </span>
-                        {isOldEvent && (
-                          <span className="pill warn" style={{ marginLeft: 8 }}>
-                            Old event
-                          </span>
-                        )}
-                      </div>
-                      <Link className="small-link" href="/gate">
-                        Use at Gate →
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-              <div className="preset-row" style={{ marginTop: 10 }}>
-                {status?.contract &&
-                  tray.some(
-                    (c) => c.contract && String(c.contract).toLowerCase() !== status.contract.toLowerCase(),
-                  ) && (
-                    <button
-                      type="button"
-                      className="secondary small-btn"
-                      onClick={() => {
-                        const filtered = tray.filter(
-                          (c) =>
-                            String(c.contract || '').toLowerCase() === status.contract.toLowerCase(),
-                        );
-                        setTray(filtered);
-                        localStorage.setItem('fairtickets-credentials', JSON.stringify(filtered));
-                      }}
-                    >
-                      Clear old-event passes
-                    </button>
-                  )}
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  onClick={() => {
-                    setTray([]);
-                    localStorage.removeItem('fairtickets-credentials');
-                  }}
-                >
-                  Clear saved passes
-                </button>
-              </div>
-            </>
-          ) : (
-            <p className="meta">No saved passes yet. Claim or buy a ticket, then sign a pass.</p>
-          )}
-        </article>
-      </section>
-
-      <StatePanel status={status} />
-    </main>
-  );
-}
-
-function resolveRoleLabel(status: DemoStatusResponse, address: string): string {
-  const lower = address.toLowerCase();
-  const entry = Object.values(status.roles || {}).find((r) => r.address.toLowerCase() === lower);
-  return entry ? entry.label : 'Guest';
-}
-
-function StatePanel({ status }: { status: DemoStatusResponse | null }) {
-  return (
-    <section className="card state">
-      <div className="card-head">
-        <h2>Current Bookings</h2>
-        {status && (
-          <span className="meta">
-            {status.issuedCount}/{status.capacity} booked · {status.admittedCount} checked in
-          </span>
-        )}
-      </div>
-
-      {status && status.tickets.length > 0 ? (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Seat / Slot</th>
-                <th>Holder</th>
-                <th>Pass Version</th>
-                <th>Paid Price</th>
-                <th>Resale Listing</th>
-                <th>Checked In</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status.tickets.map((t) => (
-                <tr key={t.slot}>
-                  <td>#{t.slot}</td>
-                  <td>{resolveRoleLabel(status, t.owner)}</td>
-                  <td>v{t.version}</td>
-                  <td>{formatWeiToInr(t.paidPriceWei, status.facePriceWei, status.facePriceInr)}</td>
-                  <td>
-                    {t.listed
-                      ? formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr)
-                      : 'Not listed'}
-                  </td>
-                  <td>{t.admitted ? 'Yes' : 'No'}</td>
-                </tr>
+          {tray.length > 0 && (
+            <ul className="pass-list">
+              {tray.map((c, i) => (
+                <li key={i} className="pass-item">
+                  <span>
+                    <strong>{String(c.label)}</strong> · Seat #{String(c.slot)} · v{String(c.version)}
+                  </span>
+                  <Link className="small-link" href="/gate">
+                    Show at Gate →
+                  </Link>
+                </li>
               ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p>{status ? 'No bookings confirmed yet.' : 'Loading bookings…'}</p>
+            </ul>
+          )}
+        </section>
       )}
-    </section>
+    </main>
   );
 }

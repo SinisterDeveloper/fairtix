@@ -1,14 +1,87 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import nodePath from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { shouldMineBeforeFinalize } from '@/lib/allocation';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
 import { inrToWei } from '@/lib/format';
 import { issueStepUpChallenge, verifyStepUpChallenge } from '@/lib/step-up-challenge';
-import type { ActivityLogEntry, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
+import type { ActivityLogEntry, ApiMutationResponse, DemoStatusResponse, EventDisplayMeta, RoleId } from '@/lib/types';
 
 export const runtime = 'nodejs';
 const MAX_ENTRY_WINDOW_SECONDS = 86_400;
+const BASE_FACE_PRICE_WEI = BigInt('50000000000000000');
+const BASE_FACE_PRICE_INR = BigInt(3000);
+const DEFAULT_EVENT_META: EventDisplayMeta = { title: 'Live Concert Event', venue: 'Main Arena', dateLabel: 'Upcoming' };
+
+function eventMetaPath() {
+  const stateTag = (process.env.FAIRTICKETS_STATE_DIR || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return nodePath.join(os.tmpdir(), `fairtickets-event-meta-${stateTag}.json`);
+}
+
+function readServerEventMeta(): EventDisplayMeta {
+  try {
+    const p = eventMetaPath();
+    if (!fs.existsSync(p)) return DEFAULT_EVENT_META;
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<EventDisplayMeta>;
+    return {
+      title: raw.title?.trim() || DEFAULT_EVENT_META.title,
+      venue: raw.venue?.trim() || DEFAULT_EVENT_META.venue,
+      dateLabel: raw.dateLabel?.trim() || DEFAULT_EVENT_META.dateLabel,
+    };
+  } catch {
+    return DEFAULT_EVENT_META;
+  }
+}
+
+function writeServerEventMeta(meta: EventDisplayMeta) {
+  try {
+    fs.writeFileSync(eventMetaPath(), JSON.stringify(meta, null, 2));
+  } catch {}
+}
+
+function clearServerEventMeta() {
+  try {
+    const p = eventMetaPath();
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {}
+}
+
+function walletPath() {
+  const stateTag = (process.env.FAIRTICKETS_STATE_DIR || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return nodePath.join(os.tmpdir(), `fairtickets-wallets-${stateTag}.json`);
+}
+
+function readWallets(): Record<string, number> {
+  try {
+    const p = walletPath();
+    if (!fs.existsSync(p)) return { fanA: 0, fanB: 0 };
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
+    return {
+      fanA: Math.max(0, Number(raw.fanA ?? 0)),
+      fanB: Math.max(0, Number(raw.fanB ?? 0)),
+    };
+  } catch {
+    return { fanA: 0, fanB: 0 };
+  }
+}
+
+function writeWallets(wallets: Record<string, number>) {
+  try {
+    fs.writeFileSync(walletPath(), JSON.stringify(wallets, null, 2));
+  } catch {}
+}
+
+function computeFacePriceInr(facePriceWei: unknown, fallback = 3000): number {
+  try {
+    if (!facePriceWei) return fallback;
+    const wei = BigInt(String(facePriceWei));
+    if (wei <= BigInt(0)) return fallback;
+    return Math.max(1, Math.round(Number((wei * BASE_FACE_PRICE_INR + BASE_FACE_PRICE_WEI / BigInt(2)) / BASE_FACE_PRICE_WEI)));
+  } catch {
+    return fallback;
+  }
+}
 type Body = Record<string, unknown>;
 const str = (v: unknown, fallback = '') => String(v ?? fallback);
 const num = (v: unknown, fallback = 0) => Number(v ?? fallback);
@@ -140,6 +213,11 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
   const { path } = await context.params;
   if (path.join('/') === 'status') {
     const status = await runCli(['status']);
+    if (status.ok !== false && status.facePriceWei) {
+      status.facePriceInr = computeFacePriceInr(status.facePriceWei, Number(status.facePriceInr || 3000));
+      status.eventMeta = readServerEventMeta();
+      status.walletBalancesInr = readWallets();
+    }
     return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
   }
   if (path.join('/') === 'organiser/alerts') return NextResponse.json(await runCli(['alerts']));
@@ -226,7 +304,35 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
   const roleFlags = roleArgs(role(body));
   const json = ['--json'];
   switch (endpoint) {
+    case 'wallet/topup': {
+      const targetRole = role(body);
+      if (targetRole !== 'fanA' && targetRole !== 'fanB') {
+        return NextResponse.json({ ok: false, txStatus: 'rejected', txHash: null, error: 'Select Fan A or Fan B to top up wallet.' }, { status: 400 });
+      }
+      const amount = Math.max(100, Math.min(100_000, Math.floor(num(body.amountInr, 3000))));
+      const wallets = readWallets();
+      wallets[targetRole] = (wallets[targetRole] || 0) + amount;
+      writeWallets(wallets);
+      return NextResponse.json({ ok: true, txStatus: 'confirmed', txHash: null, walletBalancesInr: wallets });
+    }
     case 'enter': {
+      const targetRole = role(body);
+      if (fs.existsSync(walletPath()) && (targetRole === 'fanA' || targetRole === 'fanB')) {
+        const st = await runCli(['status']);
+        const requiredInr = computeFacePriceInr(st.facePriceWei, Number(st.facePriceInr || 3000));
+        const wallets = readWallets();
+        if ((wallets[targetRole] || 0) < requiredInr) {
+          return NextResponse.json(
+            {
+              ok: false,
+              txStatus: 'rejected',
+              txHash: null,
+              error: `Insufficient wallet balance (₹${wallets[targetRole] || 0}). Add at least ₹${requiredInr.toLocaleString('en-IN')} to join the queue.`,
+            },
+            { status: 409 },
+          );
+        }
+      }
       const subject = str(body.subject, `demo-${role(body)}`);
       const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('QUEUE_JOIN', body, subject);
       if (blockedResponse) return blockedResponse;
@@ -275,7 +381,30 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
         ],
         30_000,
       )) as ApiMutationResponse;
+      if (initRes.ok !== false && initRes.txStatus === 'confirmed') {
+        writeServerEventMeta({
+          title: str(body.title, DEFAULT_EVENT_META.title).trim() || DEFAULT_EVENT_META.title,
+          venue: str(body.venue, DEFAULT_EVENT_META.venue).trim() || DEFAULT_EVENT_META.venue,
+          dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
+        });
+        writeWallets({ fanA: 0, fanB: 0 });
+      }
       return NextResponse.json(initRes, { status: httpStatus(initRes) });
+    }
+    case 'organiser/save-meta': {
+      const meta: EventDisplayMeta = {
+        title: str(body.title, DEFAULT_EVENT_META.title).trim() || DEFAULT_EVENT_META.title,
+        venue: str(body.venue, DEFAULT_EVENT_META.venue).trim() || DEFAULT_EVENT_META.venue,
+        dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
+      };
+      writeServerEventMeta(meta);
+      return NextResponse.json({ ok: true, txStatus: 'confirmed', txHash: null, eventMeta: meta });
+    }
+    case 'organiser/reset-event': {
+      const resetRes = await runCli(['reset-demo'], 15_000);
+      clearServerEventMeta();
+      writeWallets({ fanA: 0, fanB: 0 });
+      return NextResponse.json(resetRes, { status: resetRes.ok === false ? 500 : 200 });
     }
     case 'organiser/draw': {
       const status = await runCli(['status']) as Partial<DemoStatusResponse> & { ok?: boolean };
@@ -286,10 +415,22 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       return invoke(['draw', '--role', 'organiser', ...json]);
     }
     case 'claim': {
-      const accountId = str(body.subject, `demo-${role(body)}-subject`);
+      const targetRole = role(body);
+      const accountId = str(body.subject, `demo-${targetRole}-subject`);
       const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('CHECKOUT_ATTEMPT', body, accountId);
       if (blockedResponse) return blockedResponse;
-      return invoke(['claim', ...roleFlags, ...json], securityDecision);
+      const claimRes = (await runCli(['claim', ...roleFlags])) as ApiMutationResponse;
+      if (claimRes.txStatus === 'confirmed' && (targetRole === 'fanA' || targetRole === 'fanB') && fs.existsSync(walletPath())) {
+        const st = await runCli(['status']);
+        const priceInr = computeFacePriceInr(st.facePriceWei, Number(st.facePriceInr || 3000));
+        const wallets = readWallets();
+        wallets[targetRole] = Math.max(0, (wallets[targetRole] || 0) - priceInr);
+        writeWallets(wallets);
+      }
+      if (securityDecision) {
+        claimRes.securityDecision = securityDecision as ApiMutationResponse['securityDecision'];
+      }
+      return NextResponse.json(claimRes, { status: httpStatus(claimRes) });
     }
     case 'list': return invoke(['list', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
     case 'buy': {

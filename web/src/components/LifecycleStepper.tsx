@@ -5,53 +5,53 @@ import Link from 'next/link';
 type ContextPage = 'fan' | 'gate' | 'organiser';
 
 const STEPS = [
-  { key: 'ENTRY', label: '1. Join Queue', sub: 'Fans enter once', href: '/fan' },
-  { key: 'DRAW', label: '2. Finalize', sub: 'Queue / batch lottery', href: '/organiser' },
-  { key: 'CLAIM', label: '3. Claim Ticket', sub: 'Buy at face price', href: '/fan' },
-  { key: 'RESALE', label: '4. Capped Resale', sub: 'Optional <= cap trade', href: '/fan' },
-  { key: 'GATE', label: '5. Venue Gate', sub: 'One-time check-in', href: '/gate' },
+  { key: 'EVENT', label: '1. Click on Event', sub: 'Select a live show', href: '/' },
+  { key: 'ENTRY', label: '2. Join Queue', sub: 'Enter booking queue', href: '/fan' },
+  { key: 'CLAIM', label: '3. Claim if Selected', sub: 'Confirm your ticket', href: '/fan' },
+  { key: 'BOOKINGS', label: '4. My Bookings & QR', sub: 'Get QR for gate', href: '/bookings' },
+  { key: 'GATE', label: '5. Show QR at Gate', sub: 'One-time check-in', href: '/gate' },
 ] as const;
 
 function stepIndex(phase?: string): number {
   if (!phase) return -1;
   const p = phase.toUpperCase();
-  if (p.includes('ENTRY')) return 0;
-  if (p.includes('DRAW')) return 1;
+  if (p.includes('ENTRY')) return 1;
+  if (p.includes('DRAW')) return 2;
   if (p.includes('CLAIM')) return 2;
   if (p.includes('RESALE')) return 3;
   if (p.includes('GATE')) return 4;
   if (p.includes('CLOSED')) return 5;
-  return 0;
+  return 1;
 }
 
 function nextActionHint(phase: string | undefined, context: ContextPage): string {
-  const idx = stepIndex(phase);
-  if (idx === -1) return 'Connecting to local Anvil chain…';
-  if (idx === 0) {
-    if (context === 'fan') return 'Entry is open. Switch between Fan A and Fan B in the top bar and click "Enter event" to join the ticket queue.';
-    if (context === 'organiser') return 'Entry is open. Once fans have joined the queue, click "Close entry and lock allocation" below.';
-    return 'Entry is still open. Fans must join the queue, finalize reservations, claim, and reach the Gate phase before scanning.';
+  const p = (phase || '').toUpperCase();
+  if (!p) return 'Connecting to event service…';
+  if (p.includes('ENTRY')) {
+    if (context === 'fan') return 'Step 2: Join Queue — click "Enter event" for each fan.';
+    if (context === 'organiser') return 'Queue is open. Once fans join, click "Close entry and lock allocation" below.';
+    return 'Queue is open. Fans must join the queue, claim if selected, and get their QR in My Bookings.';
   }
-  if (idx === 1) {
-    if (context === 'organiser') return 'Allocation is ready. Click "Close entry and lock allocation" (if not locked), then click "Finalize reservations".';
-    return 'Entry is closed and allocation is pending. Go to the Organiser tab to finalize reservations.';
+  if (p.includes('DRAW')) {
+    if (context === 'organiser') return 'Queue closed. Click "Close entry and lock allocation" (if not locked), then "Finalize reservations".';
+    return 'Queue closed — waiting for organiser to finalize reservations.';
   }
-  if (idx === 2) {
-    if (context === 'fan') return 'Reservations are finalized! Switch to a reserved fan role and click "Claim reserved ticket" to buy at face price.';
-    if (context === 'organiser') return 'Claim window is open. Reserved fans can now claim their tickets on the Fan tab.';
-    return 'Claim window is open. Reserved fans must claim their ticket before the Gate opens.';
+  if (p.includes('CLAIM')) {
+    if (context === 'fan') return 'Step 3: Claim if Selected — click "Claim reserved ticket", then go to My Bookings to get your QR.';
+    if (context === 'organiser') return 'Claim window is open. Selected fans can claim their ticket on Book Tickets.';
+    return 'Claim window is open. Selected fans must claim and get their QR in My Bookings before Gate opens.';
   }
-  if (idx === 3) {
-    if (context === 'fan') return 'Resale window is open. The ticket holder can list at or below the cap, and the other fan can buy it.';
-    if (context === 'organiser') return 'Resale window is open. Any transfers are price-capped on-chain.';
-    return 'Resale window is open. Fans can sign passes now, and the Gate will accept them once the Gate window opens.';
+  if (p.includes('RESALE')) {
+    if (context === 'fan') return 'Step 4: Go to My Bookings to get your QR pass (or list/buy on capped resale).';
+    if (context === 'organiser') return 'Resale window is open. Advance to Gate when ready for venue check-in.';
+    return 'Resale window is open. Fans can get their QR pass in My Bookings before Gate opens.';
   }
-  if (idx === 4) {
-    if (context === 'gate') return 'Venue Gate is open! Select a saved pass or paste Credential JSON, then click "Verify and redeem".';
-    if (context === 'fan') return 'Venue Gate is open! Sign a gate pass for your ticket and take it to the Gate tab to enter.';
-    return 'Venue Gate is open. Gate staff are verifying passes and marking tickets admitted on-chain.';
+  if (p.includes('GATE')) {
+    if (context === 'gate') return 'Step 5: Show QR at Gate — select a saved pass or paste pass details, then click "Verify and redeem".';
+    if (context === 'fan') return 'Step 5: Doors are open! Go to My Bookings to get your QR pass and show it at the Gate.';
+    return 'Doors are open. Gate staff are scanning QR passes.';
   }
-  return 'This event has closed. Organiser and sellers can still withdraw any remaining proceeds.';
+  return 'This event has ended.';
 }
 
 export default function LifecycleStepper({

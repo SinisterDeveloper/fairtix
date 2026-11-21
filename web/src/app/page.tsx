@@ -18,7 +18,7 @@ function stageLabel(phase?: string): string {
 
 export default function Home() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
-  const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
   const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
 
   useEffect(() => {
@@ -26,127 +26,88 @@ export default function Home() {
     fetch('/api/status', { cache: 'no-store' })
       .then(async (r) => {
         const data = await r.json();
-        if (!r.ok || data.ok === false) throw new Error(data.error || 'No active event right now.');
+        if (!r.ok || data.ok === false) throw new Error(data.error || 'No active event.');
         setStatus(data);
-        setError('');
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Could not load live shows.'));
+      .catch(() => setStatus(null))
+      .finally(() => setLoaded(true));
   }, []);
 
+  const liveMeta = status?.eventMeta || eventMeta;
   const livePrice = status
     ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)
-    : '₹3,000';
+    : '—';
 
   return (
     <main className="page">
-      <section className="bms-hero">
-        <p className="eyebrow">FEATURED SHOW · LIVE BOOKING</p>
-        <h1>{eventMeta.title}</h1>
-        <p>
-          {eventMeta.venue} · {eventMeta.dateLabel}. Fair queue-first booking with face-value
-          resale protection—no scalping, no fake passes.
-        </p>
-        <div className="bms-hero-actions">
-          <Link className="bms-btn-light" href="/fan">
-            Book Tickets ({livePrice})
-          </Link>
-          <Link className="bms-btn-outline" href="/bookings">
-            My Bookings &amp; Passes
-          </Link>
-          <span className="pill ok">{status ? stageLabel(status.phase) : error ? 'Offline' : 'Loading…'}</span>
-        </div>
-      </section>
-
-      <section aria-label="Recommended shows">
-        <div className="card-head">
-          <h2>Recommended Shows</h2>
-          <span className="meta">Select a show to join the queue or manage your tickets</span>
-        </div>
-
-        <div className="shows-grid">
-          <article className="show-card live">
-            <div>
-              <div className="show-poster p1">
-                <span className="show-tag">CONCERT · LIVE NOW</span>
-                <strong>{status ? stageLabel(status.phase) : 'Live Event'}</strong>
-              </div>
-              <h3>{eventMeta.title}</h3>
-              <p className="show-meta">
-                {eventMeta.venue} · {eventMeta.dateLabel}
-              </p>
+      {status ? (
+        <>
+          <section className="bms-hero">
+            <p className="eyebrow">FEATURED SHOW</p>
+            <h1>{liveMeta.title}</h1>
+            <p>
+              {liveMeta.venue} · {liveMeta.dateLabel}
+            </p>
+            <div className="bms-hero-actions">
+              <Link className="bms-btn-light" href="/fan">
+                Book Tickets ({livePrice})
+              </Link>
+              <Link className="bms-btn-outline" href="/bookings">
+                My Bookings
+              </Link>
+              <span className="pill ok">{stageLabel(status.phase)}</span>
             </div>
-            <div className="show-footer">
-              <div>
-                <strong>{livePrice}</strong>
-                <div className="meta">
-                  {status ? `${status.issuedCount}/${status.capacity} booked` : 'Checking seats…'}
+          </section>
+
+          <section aria-label="Live events">
+            <div className="card-head">
+              <h2>Live Shows</h2>
+              <span className="meta">Created by organisers</span>
+            </div>
+            <div className="shows-grid">
+              <article className="show-card live">
+                <div>
+                  <div className="show-poster p1">
+                    <span className="show-tag">LIVE NOW</span>
+                    <strong>{stageLabel(status.phase)}</strong>
+                  </div>
+                  <h3>{liveMeta.title}</h3>
+                  <p className="show-meta">
+                    {liveMeta.venue} · {liveMeta.dateLabel}
+                  </p>
                 </div>
-              </div>
-              <Link className="button small-btn" href="/fan">
-                Book Now
+                <div className="show-footer">
+                  <div>
+                    <strong>{livePrice}</strong>
+                    <div className="meta">
+                      {status.issuedCount}/{status.capacity} booked
+                    </div>
+                  </div>
+                  <Link className="button small-btn" href="/fan">
+                    Book Now
+                  </Link>
+                </div>
+              </article>
+            </div>
+          </section>
+        </>
+      ) : (
+        <section className="card">
+          <h2>{loaded ? 'No live events right now' : 'Loading shows…'}</h2>
+          <p>
+            {loaded
+              ? 'An organiser can create and publish a new event from the Organisers section.'
+              : 'Checking for active events…'}
+          </p>
+          {loaded && (
+            <div className="actions" style={{ marginBottom: 0 }}>
+              <Link className="button" href="/organiser">
+                Create an Event
               </Link>
             </div>
-          </article>
-
-          <article className="show-card">
-            <div>
-              <div className="show-poster p2">
-                <span className="show-tag">LIVE MUSIC</span>
-                <strong>Coming Soon</strong>
-              </div>
-              <h3>AR Rahman — Live in Concert</h3>
-              <p className="show-meta">Jio World Garden, Mumbai · Next Month</p>
-            </div>
-            <div className="show-footer">
-              <div>
-                <strong>₹2,500</strong>
-                <div className="meta">Queue opens soon</div>
-              </div>
-              <span className="pill">Notify Me</span>
-            </div>
-          </article>
-
-          <article className="show-card">
-            <div>
-              <div className="show-poster p3">
-                <span className="show-tag">FESTIVAL</span>
-                <strong>Coming Soon</strong>
-              </div>
-              <h3>Sunburn Arena — Electronic Night</h3>
-              <p className="show-meta">Mahalaxmi Racecourse, Mumbai · Upcoming</p>
-            </div>
-            <div className="show-footer">
-              <div>
-                <strong>₹1,800</strong>
-                <div className="meta">Queue opens soon</div>
-              </div>
-              <span className="pill">Notify Me</span>
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <div>
-            <h2>Organisers &amp; Platform Staff</h2>
-            <p className="meta" style={{ margin: 0 }}>
-              Create events, manage ticket capacity and phases, check in attendees, or inspect backend logs.
-            </p>
-          </div>
-          <div className="actions" style={{ margin: 0 }}>
-            <Link className="button secondary small-btn" href="/organiser">
-              Organiser Console
-            </Link>
-            <Link className="button secondary small-btn" href="/gate">
-              Gate Scanner
-            </Link>
-            <Link className="button secondary small-btn" href="/admin">
-              Admin Logs
-            </Link>
-          </div>
-        </div>
-      </section>
+          )}
+        </section>
+      )}
     </main>
   );
 }

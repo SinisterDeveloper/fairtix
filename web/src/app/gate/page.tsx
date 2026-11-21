@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import LifecycleStepper from '@/components/LifecycleStepper';
+import QrPassCard from '@/components/QrPassCard';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { explainErrorCode, formatUnixTime, shortAddress } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse } from '@/lib/types';
@@ -287,23 +288,26 @@ export default function GatePage() {
           </div>
         </div>
 
-        <label>
-          Credential JSON
-          <textarea
-            rows={9}
-            value={credential}
-            onChange={(e) => setCredential(e.target.value)}
-          />
-        </label>
+        <QrPassCard
+          credential={parsedCred}
+          label={
+            tray[Number(selected)]?.label
+              ? String(tray[Number(selected)].label)
+              : undefined
+          }
+        />
 
-        <label>
-          Scan ID
-          <input
-            value={scanId}
-            onChange={(e) => setScanId(e.target.value)}
-            placeholder="Generated automatically for each scan"
-          />
-        </label>
+        <details style={{ margin: '10px 0' }}>
+          <summary>Paste or inspect Credential JSON</summary>
+          <label>
+            Credential JSON
+            <textarea
+              rows={7}
+              value={credential}
+              onChange={(e) => setCredential(e.target.value)}
+            />
+          </label>
+        </details>
 
         <button disabled={busy} onClick={() => void redeem()}>
           {busy ? 'Verifying…' : 'Verify and redeem'}
