@@ -74,8 +74,31 @@ async function main() {
   }
 
   console.log('Pushing metadata to Quai IPFS...');
-  const ipfsHash = await hre.deployMetadata.pushMetadataToIPFS('FairTickets');
-  console.log('IPFS metadata hash:', ipfsHash);
+  let ipfsHash = '';
+  let ipfsPinned = false;
+  try {
+    ipfsHash = await hre.deployMetadata.pushMetadataToIPFS('FairTickets');
+    ipfsPinned = Boolean(ipfsHash && ipfsHash.length === 46);
+  } catch (err) {
+    console.warn('pushMetadataToIPFS error:', err.message);
+  }
+
+  if (!ipfsHash || ipfsHash.length !== 46) {
+    if (process.env.ALLOW_OFFLINE_IPFS_CID !== '1') {
+      throw new Error(
+        `IPFS metadata upload to ipfs.qu.ai failed (received "${ipfsHash || ''}"). Retry later or set ALLOW_OFFLINE_IPFS_CID=1.`
+      );
+    }
+    const Hash = require('ipfs-only-hash');
+    const buildInfo = await hre.artifacts.getBuildInfo('contracts/FairTickets.sol:FairTickets');
+    const metadata = buildInfo.output.contracts['contracts/FairTickets.sol'].FairTickets.metadata;
+    ipfsHash = await Hash.of(metadata);
+    mkdirSync(join(__dirname, '..', 'artifacts-hardhat'), { recursive: true });
+    writeFileSync(join(__dirname, '..', 'artifacts-hardhat', 'FairTickets.metadata.json'), metadata);
+    console.warn('ipfs.qu.ai unavailable; using locally computed CIDv0:', ipfsHash);
+  } else {
+    console.log('IPFS metadata hash:', ipfsHash);
+  }
 
   const factory = new quais.ContractFactory(artifact.abi, artifact.bytecode, wallet, ipfsHash);
   const contract = await factory.deploy(...constructorArgs);
@@ -93,6 +116,7 @@ async function main() {
     transactionHash: deployTx?.hash || null,
     deployer: wallet.address,
     ipfsHash,
+    ipfsPinned,
     artifactPath: 'artifacts-hardhat/contracts/FairTickets.sol/FairTickets.json',
     explorerUrl: `https://orchard.quaiscan.io/address/${address}`,
     deployedAt: new Date().toISOString(),
