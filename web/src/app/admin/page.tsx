@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { describeAllocation } from '@/lib/allocation';
 import { formatUnixTime, formatWeiToInr, shortAddress } from '@/lib/format';
@@ -14,6 +14,7 @@ export default function AdminPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [adminLogs, setAdminLogs] = useState<AdminLogsResponse | null>(null);
   const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
+  const [selectedLogKey, setSelectedLogKey] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   async function refresh() {
@@ -104,27 +105,73 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((entry, idx) => (
-                  <tr key={`${entry.timestamp}-${idx}`}>
-                    <td>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '—'}</td>
-                    <td>
-                      <code>{entry.action}</code>
-                    </td>
-                    <td>{entry.role || '—'}</td>
-                    <td>
-                      <code>{entry.subjectLabel || entry.subject || (entry.slot ? `Slot #${entry.slot}` : '—')}</code>
-                    </td>
-                    <td>
-                      <span className={`pill ${entry.success ? 'ok' : 'warn'}`}>
-                        {entry.success ? 'SUCCESS' : 'REJECTED / FAILED'}
-                      </span>
-                    </td>
-                    <td>
-                      {entry.txHash && <code title={entry.txHash}>{shortAddress(entry.txHash)}</code>}
-                      {entry.error && <div className="meta">{entry.error}</div>}
-                    </td>
-                  </tr>
-                ))}
+                {logs.map((entry, idx) => {
+                  const rowKey = `${entry.timestamp}-${entry.action}-${entry.txHash || idx}`;
+                  const isOpen = selectedLogKey === rowKey;
+                  return (
+                    <Fragment key={rowKey}>
+                      <tr
+                        onClick={() => setSelectedLogKey(isOpen ? null : rowKey)}
+                        style={{ cursor: 'pointer', background: isOpen ? '#f4faf6' : undefined }}
+                      >
+                        <td>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '—'}</td>
+                        <td>
+                          <code>{entry.action}</code>
+                        </td>
+                        <td>{entry.role || '—'}</td>
+                        <td>
+                          <code>{entry.subjectLabel || entry.subject || (entry.slot ? `Slot #${entry.slot}` : '—')}</code>
+                        </td>
+                        <td>
+                          <span className={`pill ${entry.success ? 'ok' : 'warn'}`}>
+                            {entry.success ? 'SUCCESS' : 'REJECTED / FAILED'}
+                          </span>
+                        </td>
+                        <td>
+                          {entry.txHash && <code title={entry.txHash}>{shortAddress(entry.txHash)}</code>}
+                          {entry.error && <div className="meta">{entry.error}</div>}
+                          <div className="small-link">{isOpen ? 'Hide details ▲' : 'View details ▼'}</div>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={6} style={{ background: '#f8faf9', padding: 14 }}>
+                            <div className="metrics-grid" style={{ marginTop: 0 }}>
+                              <div>
+                                <span className="meta">Timestamp</span>
+                                <div><code>{entry.timestamp || '—'}</code></div>
+                              </div>
+                              <div>
+                                <span className="meta">Action · Role</span>
+                                <div><code>{entry.action}</code> · {entry.role || '—'}</div>
+                              </div>
+                              <div>
+                                <span className="meta">Subject / Slot / Scan ID</span>
+                                <div>
+                                  <code>
+                                    {String(entry.subjectLabel || entry.subject || (entry.slot ? `Slot #${entry.slot}` : entry.scanId || '—'))}
+                                  </code>
+                                </div>
+                              </div>
+                              <div>
+                                <span className="meta">Transaction Hash</span>
+                                <div><code>{entry.txHash || '—'}</code></div>
+                              </div>
+                            </div>
+                            {entry.error && (
+                              <p className="role-warning" style={{ margin: '8px 0' }}>
+                                <strong>Error / Reason:</strong> {entry.error}
+                              </p>
+                            )}
+                            <pre style={{ margin: '8px 0 0', maxHeight: 220 }}>
+                              {JSON.stringify(entry, null, 2)}
+                            </pre>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
