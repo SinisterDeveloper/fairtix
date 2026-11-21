@@ -261,10 +261,6 @@ export default function FanPage() {
               Status: <strong>{fanQueueStatus}</strong>
             </p>
           )}
-          <label>
-            Demo subject
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} />
-          </label>
           <button disabled={!isFan || busy} onClick={() => void act('enter', { subject })}>
             Enter event
           </button>
