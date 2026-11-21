@@ -7,19 +7,12 @@ import SecurityReplay from './SecurityReplay';
 import SecurityCapacity from './SecurityCapacity';
 
 export default function AttackPage() {
-  const tokenInput = useRef<HTMLInputElement>(null);
   const [attemptsCount, setAttemptsCount] = useState('3');
   const [controlRole, setControlRole] = useState<Extract<RoleId, 'fanA' | 'fanB'>>('fanA');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<DemoAttackResponse | null>(null);
   const [error, setError] = useState('');
   const inFlightRef = useRef(false);
-
-  function getOperatorToken() {
-    const token = tokenInput.current?.value.trim() ?? '';
-    if (!token) tokenInput.current?.focus();
-    return token;
-  }
 
   async function launchAttack() {
     if (inFlightRef.current || busy) return;
@@ -55,14 +48,8 @@ export default function AttackPage() {
   return (
     <main className="page">
       <h1>Ticketing security evaluation</h1>
-      <section className="card" aria-label="Operator authorization">
-        <label>
-          Operator token for replay and capacity runs
-          <input ref={tokenInput} type="password" autoComplete="off" />
-        </label>
-      </section>
-      <SecurityReplay getOperatorToken={getOperatorToken} />
-      <SecurityCapacity getOperatorToken={getOperatorToken} />
+      <SecurityReplay />
+      <SecurityCapacity />
 
       <section className="card">
         <div className="card-head">

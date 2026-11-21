@@ -159,7 +159,7 @@ function ReplayReport({ report }: { report: ReplayResponse }) {
   );
 }
 
-export default function SecurityReplay({ getOperatorToken }: { getOperatorToken: () => string }) {
+export default function SecurityReplay() {
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<ReplayResponse | null>(null);
   const [error, setError] = useState('');
@@ -168,20 +168,14 @@ export default function SecurityReplay({ getOperatorToken }: { getOperatorToken:
     event.preventDefault();
     if (busy) return;
     const fields = new FormData(event.currentTarget);
-    const operatorToken = getOperatorToken();
     setReport(null);
     setError('');
-    if (!operatorToken) {
-      setError('Enter the operator token to run the replay.');
-      return;
-    }
     setBusy(true);
     try {
       const response = await fetch('/api/security/replay', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${operatorToken}`,
         },
         body: JSON.stringify({
           fixture: fields.get('fixture'),

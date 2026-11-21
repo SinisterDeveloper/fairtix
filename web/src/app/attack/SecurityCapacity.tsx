@@ -49,7 +49,7 @@ function CapacityResults({ report }: { report: CapacityReport }) {
   );
 }
 
-export default function SecurityCapacity({ getOperatorToken }: { getOperatorToken: () => string }) {
+export default function SecurityCapacity() {
   const [buyers, setBuyers] = useState(String(capacityInputs.buyers.defaultValue));
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<CapacityReport | null>(null);
@@ -59,20 +59,14 @@ export default function SecurityCapacity({ getOperatorToken }: { getOperatorToke
     event.preventDefault();
     if (busy) return;
     const fields = new FormData(event.currentTarget);
-    const operatorToken = getOperatorToken();
     setReport(null);
     setError('');
-    if (!operatorToken) {
-      setError('Enter the operator token to run the capacity benchmark.');
-      return;
-    }
     setBusy(true);
     try {
       const response = await fetch('/api/security/capacity', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${operatorToken}`,
         },
         body: JSON.stringify({
           buyers: Number(fields.get('buyers')),
