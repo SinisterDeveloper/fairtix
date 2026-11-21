@@ -5,12 +5,16 @@ import type { TicketState } from '@/lib/types';
 export default function StadiumSeating({
   capacity,
   tickets,
+  takenSeats = {},
+  activeRole,
   selectedSeat,
   onSelectSeat,
   resaleSelectable = false,
 }: {
   capacity: number;
   tickets: TicketState[];
+  takenSeats?: Record<string, string>;
+  activeRole?: string;
   selectedSeat: number;
   onSelectSeat: (seat: number) => void;
   resaleSelectable?: boolean;
@@ -19,9 +23,11 @@ export default function StadiumSeating({
   const seats = Array.from({ length: total }, (_, idx) => {
     const num = idx + 1;
     const ticket = tickets.find((t) => t.slot === num);
-    const booked = Boolean(ticket && ticket.owner && !/^0x0{40}$/i.test(ticket.owner));
+    const claimed = Boolean(ticket && ticket.owner && !/^0x0{40}$/i.test(ticket.owner));
+    const takenBy = takenSeats[String(num)];
+    const occupied = claimed || Boolean(takenBy && takenBy !== activeRole);
     const listed = Boolean(ticket?.listed);
-    return { num, booked, listed };
+    return { num, occupied, listed };
   });
 
   // Split seats into stadium rows (front row smaller, back rows wider)
@@ -43,11 +49,11 @@ export default function StadiumSeating({
             <span className="stadium-row-label">R{rowIdx + 1}</span>
             <div className="stadium-seats">
               {row.map((seat) => {
-                const isSelected = selectedSeat === seat.num;
-                const disabled = seat.booked && !(resaleSelectable && seat.listed);
+                const isSelected = selectedSeat === seat.num && !seat.occupied;
+                const disabled = seat.occupied && !(resaleSelectable && seat.listed);
                 const stateClass = seat.listed
                   ? 'resale'
-                  : seat.booked
+                  : seat.occupied
                     ? 'booked'
                     : isSelected
                       ? 'selected'
@@ -62,8 +68,8 @@ export default function StadiumSeating({
                     title={
                       seat.listed
                         ? `Seat #${seat.num} · Listed for resale`
-                        : seat.booked
-                          ? `Seat #${seat.num} · Booked`
+                        : seat.occupied
+                          ? `Seat #${seat.num} · Occupied`
                           : `Seat #${seat.num} · Available`
                     }
                   >
@@ -78,7 +84,7 @@ export default function StadiumSeating({
       <div className="stadium-legend">
         <span><i className="dot available" /> Available</span>
         <span><i className="dot selected" /> Selected</span>
-        <span><i className="dot booked" /> Booked</span>
+        <span><i className="dot booked" /> Occupied</span>
         {seats.some((s) => s.listed) && (
           <span><i className="dot resale" /> Resale</span>
         )}

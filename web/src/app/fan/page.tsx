@@ -271,6 +271,8 @@ export default function FanPage() {
             <StadiumSeating
               capacity={status.capacity}
               tickets={status.tickets}
+              takenSeats={status.takenSeats}
+              activeRole={role}
               selectedSeat={selectedSeat}
               onSelectSeat={(num) => {
                 setSelectedSeat(num);
@@ -297,7 +299,7 @@ export default function FanPage() {
               </button>
             </div>
           )}
-          <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject })}>
+          <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject, seat: selectedSeat })}>
             Enter event
           </button>
         </section>
@@ -326,6 +328,8 @@ export default function FanPage() {
           <StadiumSeating
             capacity={status.capacity}
             tickets={status.tickets}
+            takenSeats={status.takenSeats}
+            activeRole={role}
             selectedSeat={heldTicket ? heldTicket.slot : selectedSeat}
             onSelectSeat={(num) => {
               setSelectedSeat(num);

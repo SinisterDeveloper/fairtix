@@ -71,6 +71,27 @@ function writeWallets(wallets: Record<string, number>) {
   } catch {}
 }
 
+function seatsPath() {
+  const stateTag = (process.env.FAIRTICKETS_STATE_DIR || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return nodePath.join(os.tmpdir(), `fairtickets-seats-${stateTag}.json`);
+}
+
+function readSeats(): Record<string, string> {
+  try {
+    const p = seatsPath();
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function writeSeats(seats: Record<string, string>) {
+  try {
+    fs.writeFileSync(seatsPath(), JSON.stringify(seats, null, 2));
+  } catch {}
+}
+
 function computeFacePriceInr(facePriceWei: unknown, fallback = 3000): number {
   try {
     if (!facePriceWei) return fallback;
@@ -99,6 +120,7 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
       status.facePriceInr = computeFacePriceInr(status.facePriceWei, Number(status.facePriceInr || 3000));
       status.eventMeta = readServerEventMeta();
       status.walletBalancesInr = readWallets();
+      status.takenSeats = readSeats();
     }
     return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
   }
@@ -215,6 +237,16 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
           );
         }
       }
+      const requestedSeat = body.seat ? String(Math.max(1, Math.floor(num(body.seat, 1)))) : null;
+      if (requestedSeat) {
+        const seats = readSeats();
+        if (seats[requestedSeat] && seats[requestedSeat] !== targetRole) {
+          return NextResponse.json(
+            { ok: false, txStatus: 'rejected', txHash: null, error: `Seat #S${requestedSeat} is already occupied. Please select another seat.` },
+            { status: 409 },
+          );
+        }
+      }
       const subject = str(body.subject, `demo-${role(body)}`);
       if (body.enforceSecurity === true) {
         const nowIso = new Date().toISOString();
@@ -248,7 +280,13 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
           );
         }
       }
-      return invoke(['enter', ...roleFlags, '--subject', subject, ...json]);
+      const enterRes = (await runCli(['enter', ...roleFlags, '--subject', subject])) as ApiMutationResponse;
+      if (enterRes.txStatus === 'confirmed' && requestedSeat && (targetRole === 'fanA' || targetRole === 'fanB')) {
+        const seats = readSeats();
+        seats[requestedSeat] = targetRole;
+        writeSeats(seats);
+      }
+      return NextResponse.json(enterRes, { status: httpStatus(enterRes) });
     }
     case 'organiser/advance-and-lock': {
       if (body.seconds !== undefined) {
@@ -300,6 +338,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
           dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
         });
         writeWallets({ fanA: 0, fanB: 0 });
+      writeSeats({});
       }
       return NextResponse.json(initRes, { status: httpStatus(initRes) });
     }
@@ -316,6 +355,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       const resetRes = await runCli(['reset-demo'], 15_000);
       clearServerEventMeta();
       writeWallets({ fanA: 0, fanB: 0 });
+      writeSeats({});
       return NextResponse.json(resetRes, { status: resetRes.ok === false ? 500 : 200 });
     }
     case 'organiser/draw': {
