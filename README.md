@@ -10,6 +10,21 @@ FairTickets is an anti-scalping event ticketing platform built on a local Anvil 
 - **One-Time QR Gate Admission:** Venue check-in verifies a short-lived EIP-712 pass (`GateCredential`) encoding `editionId`, `slot`, `version`, and `expiry`, preventing stale-pass reuse and duplicate scans.
 - **Hybrid Security & ML Engine:** Combines deterministic anti-bot/scalping rules with an unsupervised human-baseline anomaly detector (`security/`) and live step-up challenges.
 
+## How FairTickets Is Different & Key Innovations
+
+Most ticketing platforms either rely on a mutable centralized database (vulnerable to insider leaks, silent overselling, and off-platform scalping) or expose raw Web3/NFT complexity directly to concertgoers while still leaving static QR screenshots exploitable. FairTickets introduces five concrete differences:
+
+1. **Queue-First Allocation with Boundary-Only Randomness:**
+   - Pure first-come-first-served (FCFS) triggers bot speed races; pure lotteries ignore arrival order. FairTickets preserves **queue priority by entry block** and only runs a partial Fisher–Yates lottery on the **single boundary block** that exceeds remaining capacity—skipping randomness altogether when earlier blocks fit.
+2. **Versioned Gate Credentials (`v1 → v2` Auto-Invalidation):**
+   - A resale transfer increments the ticket's on-chain `version`. Any previously signed QR pass (`v1`) is automatically invalidated on-chain (`STALE_CREDENTIAL`) without needing an external revocation server, and each `scanId` is idempotent to prevent double-entry.
+3. **Hybrid Rules + Unsupervised Human-Baseline ML:**
+   - Instead of relying solely on static rate limits or brittle CAPTCHAs, the security engine pairs deterministic abuse rules (account farms, coordinated network bursts, inventory hoarding) with an **unsupervised human-baseline anomaly model** (`security/`, `train/`) and **single-use signed step-up challenges**—benchmarked up to 100,000 synthetic buyers.
+4. **Crash-Safe Wallet Locking & Journal Recovery:**
+   - Server-side transactions use kernel wallet locking (`withWalletLock`) and write-ahead journaling (`artifacts/journal/`). If an RPC response drops mid-flight, the UI surfaces `unknown_recovering` and reconciles the exact transaction via `resume` instead of blindly resending and double-spending.
+5. **Consumer-First 3-Zone Architecture:**
+   - Fans interact with a familiar booking experience (show listings, INR wallet, interactive stadium seat map, scannable QR pass) with zero blockchain jargon, while **Organisers** manage event lifecycles and **Admins** inspect live backend logs, capacity benchmarks, and reconciled financial credits.
+
 ## Architecture
 
 | Directory | Purpose |
