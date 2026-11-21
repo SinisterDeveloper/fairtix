@@ -18,11 +18,11 @@ const activityLogPath = join(stateDir, 'activity-log.ndjson');
 const securityEventsLogPath = join(stateDir, 'security-events.ndjson');
 const securityCliRunnerPath = join(root, 'security', 'src', 'cli-runner.ts');
 
-function runSecurityCliRunner(mode, extraArgs = [], stdinInput = undefined) {
+function runSecurityCliRunner(mode, extraArgs = [], stdinInput = undefined, timeout = undefined) {
   const stdout = execFileSync(
     process.execPath,
     ['--experimental-strip-types', '--no-warnings', securityCliRunnerPath, mode, '--state-dir', stateDir, ...extraArgs],
-    { cwd: root, encoding: 'utf8', ...(stdinInput !== undefined ? { input: stdinInput } : {}) }
+    { cwd: root, encoding: 'utf8', timeout, ...(stdinInput !== undefined ? { input: stdinInput } : {}) }
   );
   return JSON.parse(stdout);
 }
@@ -590,6 +590,31 @@ async function readTicketState(contract, slot) {
 
 async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
+  if (cmd === 'security-replay' || cmd === 'security-capacity') {
+    const replay = cmd === 'security-replay';
+    const allowed = replay
+      ? ['fixture', 'seed', 'participants', 'inventory', 'profile']
+      : ['buyers', 'wave-size', 'buyers-per-network'];
+    const extra = [];
+    for (const [name, value] of Object.entries(opts)) {
+      if (name === 'json') continue;
+      if (!allowed.includes(name) || typeof value !== 'string') {
+        throw new Error(`Invalid ${cmd} option: --${name}`);
+      }
+      extra.push(`--${name}`, value);
+    }
+    let result;
+    try {
+      result = runSecurityCliRunner(replay ? 'replay' : 'capacity', extra, undefined, replay ? undefined : 80_000);
+    } catch (error) {
+      if (replay || error.code !== 'ETIMEDOUT') throw error;
+      result = { ok: false, errorCode: 'CAPACITY_TIMEOUT', error: 'Security capacity run timed out.' };
+    }
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
   let rpcUrl = opts.rpc || 'http://127.0.0.1:8545';
   let { rpc } = makeRpc(rpcUrl);
   const artifact = loadArtifact();

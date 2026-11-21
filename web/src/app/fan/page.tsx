@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import StadiumSeating from '@/components/StadiumSeating';
+import SecurityVerdictCard from '@/components/SecurityVerdictCard';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
@@ -21,7 +22,7 @@ export default function FanPage() {
   const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [challengeAnswer, setChallengeAnswer] = useState('');
+  const [sharedDeviceDemo, setSharedDeviceDemo] = useState(false);
   const [lastGatedAction, setLastGatedAction] = useState<{ endpoint: string; body: Record<string, unknown> } | null>(null);
   const isFan = role === 'fanA' || role === 'fanB';
 
@@ -80,8 +81,8 @@ export default function FanPage() {
         ? {
             subject: strSubject(body.subject),
             sessionId: `live_sess_${role}`,
-            deviceId: `live_dev_${role}`,
-            paymentTokenHash: `live_pay_${role}`,
+            deviceId: sharedDeviceDemo ? 'shared_bot_dev_demo' : `live_dev_${role}`,
+            paymentTokenHash: sharedDeviceDemo ? 'shared_bot_pay_demo' : `live_pay_${role}`,
             eventSaleId: status?.contract || 'fairtickets_live_sale',
           }
         : {};
@@ -280,86 +281,17 @@ export default function FanPage() {
         onResume={() => void act('tx/resume', { scanId: message?.scanId, txHash: message?.txHash })}
       />
 
-      {message?.securityDecision && (
-        <section className="card" aria-live="polite">
-          <div className="card-head">
-            <h2>Live Security &amp; ML Verdict</h2>
-            <span
-              className={`pill ${
-                message.securityDecision.decision === 'ALLOW'
-                  ? 'ok'
-                  : message.securityDecision.decision === 'BLOCK'
-                    ? 'danger'
-                    : 'warn'
-              }`}
-            >
-              {message.securityDecision.decision || 'ALLOW'} · Risk {message.securityDecision.riskScore ?? 0}/100
-            </span>
-          </div>
-          <div className="metrics-grid">
-            <div className="metric">
-              <span>Supervised ML Score</span>
-              <strong>{message.securityDecision.mlScore ?? 0} / 100</strong>
-              <small>Decision ID: {message.securityDecision.decisionId || '—'}</small>
-            </div>
-            <div className="metric">
-              <span>Unsupervised Anomaly</span>
-              <strong>{message.securityDecision.unsupervisedAnomalyScore ?? 0} / 100</strong>
-              <small>Live Welford Human Baseline</small>
-            </div>
-            <div className="metric">
-              <span>Reasons</span>
-              <strong>
-                {message.securityDecision.reasons && message.securityDecision.reasons.length > 0
-                  ? message.securityDecision.reasons.join(', ')
-                  : 'Clean ALLOW'}
-              </strong>
-              <small>Enforced server-side before Anvil tx</small>
-            </div>
-          </div>
-          {message.stepUpChallenge && lastGatedAction && (
-            <div style={{ marginTop: 12 }}>
-              <p>
-                <strong>{message.stepUpChallenge.prompt}</strong>
-              </p>
-              <div className="inline-fields" style={{ marginTop: 8 }}>
-                <label>
-                  Verification Answer
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="Enter answer"
-                    value={challengeAnswer}
-                    disabled={busy}
-                    onChange={(e) => setChallengeAnswer(e.target.value)}
-                  />
-                </label>
-              </div>
-              <div className="actions" style={{ marginTop: 10 }}>
-                <button
-                  disabled={busy || !challengeAnswer.trim()}
-                  onClick={() => {
-                    const chl = message.stepUpChallenge;
-                    if (!chl) return;
-                    const answer = challengeAnswer.trim();
-                    setChallengeAnswer('');
-                    void act(lastGatedAction.endpoint, {
-                      ...lastGatedAction.body,
-                      challengeResponse: {
-                        challengeId: chl.challengeId,
-                        token: chl.token,
-                        answer,
-                      },
-                    });
-                  }}
-                >
-                  {busy ? 'Verifying…' : 'Submit Verification & Retry'}
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
+      <SecurityVerdictCard
+        message={message}
+        busy={busy}
+        onSubmitChallenge={(challengeId, token, answer) => {
+          if (!lastGatedAction) return;
+          void act(lastGatedAction.endpoint, {
+            ...lastGatedAction.body,
+            challengeResponse: { challengeId, token, answer },
+          });
+        }}
+      />
 
       {(!status || phase.includes('ENTRY')) && (
         <section className="card narrow card-active">
@@ -400,6 +332,18 @@ export default function FanPage() {
           <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject })}>
             Enter event
           </button>
+          <details style={{ marginTop: 12 }}>
+            <summary>Security telemetry mode ({sharedDeviceDemo ? 'Shared device · Step-Up' : 'Normal fan'})</summary>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                style={{ width: 'auto' }}
+                checked={sharedDeviceDemo}
+                onChange={(e) => setSharedDeviceDemo(e.target.checked)}
+              />
+              Simulate shared bot device/payment across accounts (triggers Step-Up Challenge)
+            </label>
+          </details>
         </section>
       )}
 

@@ -49,7 +49,23 @@ export interface InventoryEvaluationResult {
   clusterSoldCount: number;
   accountActiveHolds: number;
   clusterActiveHolds: number;
+  clusterHeldQuantity: number;
+  convertedHoldQuantity: number;
   availableInventory: number;
+}
+
+function convertibleHold(sale: SaleInventoryState, event: NormalizedSecurityEvent): HoldRecord | undefined {
+  const id = event.eventContext.reservationId;
+  const hold = id ? sale.holds.get(id) : undefined;
+  if (hold?.status === 'ACTIVE' && hold.accountId === event.accountId && hold.quantity >= event.quantity) {
+    return hold;
+  }
+}
+
+interface ActiveHoldIndex {
+  holds: Set<HoldRecord>;
+  byAccount: Map<string, { count: number; quantity: number }>;
+  nextExpiry: number;
 }
 
 /**
@@ -60,6 +76,7 @@ export interface InventoryEvaluationResult {
  */
 export class InventoryAbuseGuard {
   private readonly sales = new Map<string, SaleInventoryState>();
+  private readonly activeHolds = new WeakMap<SaleInventoryState, ActiveHoldIndex>();
 
   configureSale(eventSaleId: string, config: SaleInventoryConfig = {}): SaleInventoryState {
     const existing = this.sales.get(eventSaleId);
@@ -104,12 +121,23 @@ export class InventoryAbuseGuard {
       abandonedByAccount: new Map(),
       processedStandaloneAbandons: new Set(),
     };
+    this.activeHolds.set(state, { holds: new Set(), byAccount: new Map(), nextExpiry: Infinity });
     this.sales.set(eventSaleId, state);
     return state;
   }
 
   getSaleState(eventSaleId: string): SaleInventoryState {
     return this.sales.get(eventSaleId) ?? this.configureSale(eventSaleId);
+  }
+
+  private removeActiveHold(sale: SaleInventoryState, hold: HoldRecord): void {
+    const index = this.activeHolds.get(sale)!;
+    index.holds.delete(hold);
+    const account = index.byAccount.get(hold.accountId)!;
+    account.count -= 1;
+    account.quantity -= hold.quantity;
+    if (account.count === 0) index.byAccount.delete(hold.accountId);
+    if (index.holds.size === 0) index.nextExpiry = Infinity;
   }
 
   private releaseHoldExactOnce(
@@ -124,6 +152,7 @@ export class InventoryAbuseGuard {
     }
     hold.status = newStatus;
     hold.releasedAtMs = nowMs;
+    this.removeActiveHold(sale, hold);
     sale.releasedHoldIds.add(hold.reservationId);
     sale.availableInventory = Math.min(sale.capacity, sale.availableInventory + hold.quantity);
     sale.exactOnceReleaseCount += 1;
@@ -140,12 +169,18 @@ export class InventoryAbuseGuard {
    */
   sweepExpiredHolds(eventSaleId: string, nowMs: number): string[] {
     const sale = this.getSaleState(eventSaleId);
+    const index = this.activeHolds.get(sale)!;
     const expiredIds: string[] = [];
-    for (const hold of sale.holds.values()) {
-      if (hold.status === 'ACTIVE' && hold.expiresAtMs <= nowMs) {
+    if (nowMs < index.nextExpiry) return expiredIds;
+
+    index.nextExpiry = Infinity;
+    for (const hold of index.holds) {
+      if (hold.expiresAtMs <= nowMs) {
         if (this.releaseHoldExactOnce(sale, hold, 'EXPIRED', nowMs)) {
           expiredIds.push(hold.reservationId);
         }
+      } else {
+        index.nextExpiry = Math.min(index.nextExpiry, hold.expiresAtMs);
       }
     }
     return expiredIds;
@@ -181,10 +216,20 @@ export class InventoryAbuseGuard {
       }
     }
 
+    const index = this.activeHolds.get(sale)!;
     const accountAbandoned = sale.abandonedByAccount.get(event.accountId) ?? 0;
+    const accountActiveHolds = index.byAccount.get(event.accountId)?.count ?? 0;
+    const accountSoldCount = sale.soldByAccount.get(event.accountId) ?? 0;
     let clusterAbandoned = 0;
+    let clusterActiveHolds = 0;
+    let clusterHeldQuantity = 0;
+    let clusterSoldCount = 0;
     for (const accId of cluster.accountIds) {
       clusterAbandoned += sale.abandonedByAccount.get(accId) ?? 0;
+      clusterSoldCount += sale.soldByAccount.get(accId) ?? 0;
+      const active = index.byAccount.get(accId);
+      clusterActiveHolds += active?.count ?? 0;
+      clusterHeldQuantity += active?.quantity ?? 0;
     }
 
     if (accountAbandoned >= 2 || (!cluster.isBenignHousehold && clusterAbandoned >= 3)) {
@@ -195,22 +240,6 @@ export class InventoryAbuseGuard {
         detail: `Account ${event.accountId} has ${accountAbandoned} abandoned/expired holds (cluster total: ${clusterAbandoned})`,
         supportingEventIds: [event.eventId],
       });
-    }
-
-    let accountActiveHolds = 0;
-    let clusterActiveHolds = 0;
-    const clusterSet = new Set(cluster.accountIds);
-    for (const hold of sale.holds.values()) {
-      if (hold.status === 'ACTIVE') {
-        if (hold.accountId === event.accountId) accountActiveHolds += 1;
-        if (clusterSet.has(hold.accountId)) clusterActiveHolds += 1;
-      }
-    }
-
-    const accountSoldCount = sale.soldByAccount.get(event.accountId) ?? 0;
-    let clusterSoldCount = 0;
-    for (const accId of cluster.accountIds) {
-      clusterSoldCount += sale.soldByAccount.get(accId) ?? 0;
     }
 
     if (event.eventType === 'RESERVATION_CREATE') {
@@ -248,16 +277,21 @@ export class InventoryAbuseGuard {
       }
     }
 
+    let convertedHoldQuantity = 0;
     if (event.eventType === 'CHECKOUT_ATTEMPT') {
-      const resId = event.eventContext.reservationId;
-      const existingHold = resId ? sale.holds.get(resId) : undefined;
-      const usesValidOwnHold =
-        existingHold !== undefined &&
-        existingHold.status === 'ACTIVE' &&
-        existingHold.accountId === event.accountId &&
-        existingHold.quantity >= event.quantity;
+      convertedHoldQuantity = convertibleHold(sale, event)?.quantity ?? 0;
+      if (protectionsEnabled && accountSoldCount + event.quantity > sale.maxTicketsPerAccount) {
+        signals.push({
+          rule: 'purchase-limit',
+          reason: 'ACCOUNT_PURCHASE_LIMIT_EXCEEDED',
+          points: 0,
+          hardFailure: true,
+          detail: `Account exceeded the ticket limit (${sale.maxTicketsPerAccount})`,
+          supportingEventIds: [event.eventId],
+        });
+      }
 
-      if (!usesValidOwnHold && sale.availableInventory < event.quantity) {
+      if (!convertedHoldQuantity && sale.availableInventory < event.quantity) {
         signals.push({
           rule: 'OAT-021:inventory-abuse',
           reason: 'INVENTORY_EXHAUSTED',
@@ -276,6 +310,8 @@ export class InventoryAbuseGuard {
       clusterSoldCount,
       accountActiveHolds,
       clusterActiveHolds,
+      clusterHeldQuantity,
+      convertedHoldQuantity,
       availableInventory: sale.availableInventory,
     };
   }
@@ -297,7 +333,7 @@ export class InventoryAbuseGuard {
       }
       const ttl = event.eventContext.holdTtlMs ?? sale.holdTtlMs;
       sale.availableInventory -= event.quantity;
-      sale.holds.set(reservationId, {
+      const hold: HoldRecord = {
         reservationId,
         accountId: event.accountId,
         eventSaleId: event.eventContext.eventSaleId,
@@ -305,15 +341,23 @@ export class InventoryAbuseGuard {
         createdAtMs: event.timestampMs,
         expiresAtMs: event.timestampMs + ttl,
         status: 'ACTIVE',
-      });
+      };
+      sale.holds.set(reservationId, hold);
+      const index = this.activeHolds.get(sale)!;
+      index.holds.add(hold);
+      index.nextExpiry = Math.min(index.nextExpiry, hold.expiresAtMs);
+      const account = index.byAccount.get(event.accountId) ?? { count: 0, quantity: 0 };
+      account.count += 1;
+      account.quantity += hold.quantity;
+      index.byAccount.set(event.accountId, account);
       return { committed: true, reservationId };
     }
 
     if (event.eventType === 'CHECKOUT_ATTEMPT') {
-      const resId = event.eventContext.reservationId;
-      const existingHold = resId ? sale.holds.get(resId) : undefined;
-      if (existingHold && existingHold.status === 'ACTIVE' && existingHold.accountId === event.accountId) {
+      const existingHold = convertibleHold(sale, event);
+      if (existingHold) {
         existingHold.status = 'CONVERTED';
+        this.removeActiveHold(sale, existingHold);
         const diff = existingHold.quantity - event.quantity;
         if (diff > 0) {
           sale.availableInventory = Math.min(sale.capacity, sale.availableInventory + diff);

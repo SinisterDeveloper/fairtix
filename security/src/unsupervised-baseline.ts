@@ -80,6 +80,7 @@ const DEFAULT_HUMAN_BASELINE: BaselineStatsSnapshot = {
 };
 
 export interface UnsupervisedBaselineOptions {
+  frozenSnapshot?: BaselineStatsSnapshot;
   baselinePath?: string | null;
   liveTracePath?: string | null;
   challengeSigmaThreshold?: number;
@@ -100,6 +101,7 @@ export class UnsupervisedBaselineDetector {
   private readonly challengeSigma: number;
   private readonly blockSigma: number;
   private readonly minSessionEvents: number;
+  private readonly frozen: boolean;
   private baseline: BaselineStatsSnapshot;
   private readonly liveTraces: Array<{
     timestamp: string;
@@ -114,7 +116,10 @@ export class UnsupervisedBaselineDetector {
     this.challengeSigma = options.challengeSigmaThreshold ?? 3.1;
     this.blockSigma = options.blockSigmaThreshold ?? 4.5;
     this.minSessionEvents = options.minSessionEvents ?? 3;
-    this.baseline = this.loadOrDefaultBaseline();
+    this.frozen = options.frozenSnapshot !== undefined;
+    this.baseline = options.frozenSnapshot
+      ? structuredClone(options.frozenSnapshot)
+      : this.loadOrDefaultBaseline();
   }
 
   private loadOrDefaultBaseline(): BaselineStatsSnapshot {
@@ -233,6 +238,8 @@ export class UnsupervisedBaselineDetector {
     isClustered: boolean;
     features: BehavioralFeatureVector;
   }): void {
+    if (this.frozen) return;
+
     const { features } = params;
     if (features.sessionEventCount >= this.minSessionEvents) {
       const entry = {

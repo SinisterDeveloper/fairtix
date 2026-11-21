@@ -144,50 +144,50 @@ async function evaluateLiveSecurityGate(
     };
   }
 
-  if (decision === 'CHALLENGE') {
-    const rawResp =
-      body.challengeResponse && typeof body.challengeResponse === 'object'
-        ? (body.challengeResponse as Record<string, unknown>)
-        : null;
-    if (rawResp) {
-      const verified = verifyStepUpChallenge({
-        challengeId: str(rawResp.challengeId),
-        token: str(rawResp.token),
-        answer: str(rawResp.answer),
-        accountId,
-        action: eventType,
-      });
-      if (verified.ok) {
-        return { blockedResponse: null, securityDecision: secDecision };
-      }
-      // Record failed verification into RiskEngine (+20 PREVIOUSLY_FAILED_VERIFICATION)
-      const failId = `web_vfail_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const failEvent = {
-        ...secEvent,
-        eventId: failId,
-        timestamp: new Date().toISOString(),
-        eventType: 'VERIFICATION_FAILED',
-        eventIdempotencyKey: `idem_${failId}`,
-      };
-      const updatedDecision = await runCli(['security-eval', '--event', JSON.stringify(failEvent)], 15_000);
-      const freshChallenge = issueStepUpChallenge(accountId, eventType);
-      return {
-        blockedResponse: NextResponse.json(
-          {
-            ok: false,
-            txStatus: 'rejected',
-            txHash: null,
-            errorCode: 'SECURITY_CHALLENGE_FAILED',
-            error: `Step-up verification failed (${verified.reason || 'Invalid answer'}). Complete the new verification prompt.`,
-            securityDecision: updatedDecision,
-            stepUpChallenge: freshChallenge,
-          },
-          { status: 403 },
-        ),
-        securityDecision: updatedDecision,
-      };
-    }
+  const rawResp =
+    body.challengeResponse && typeof body.challengeResponse === 'object'
+      ? (body.challengeResponse as Record<string, unknown>)
+      : null;
 
+  if (rawResp && decision !== 'BLOCK') {
+    const verified = verifyStepUpChallenge({
+      challengeId: str(rawResp.challengeId),
+      token: str(rawResp.token),
+      answer: str(rawResp.answer),
+      accountId,
+      action: eventType,
+    });
+    if (verified.ok) {
+      return { blockedResponse: null, securityDecision: secDecision };
+    }
+    const failId = `web_vfail_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const failEvent = {
+      ...secEvent,
+      eventId: failId,
+      timestamp: new Date().toISOString(),
+      eventType: 'VERIFICATION_FAILED',
+      eventIdempotencyKey: `idem_${failId}`,
+    };
+    const updatedDecision = await runCli(['security-eval', '--event', JSON.stringify(failEvent)], 15_000);
+    const freshChallenge = issueStepUpChallenge(accountId, eventType);
+    return {
+      blockedResponse: NextResponse.json(
+        {
+          ok: false,
+          txStatus: 'rejected',
+          txHash: null,
+          errorCode: 'SECURITY_CHALLENGE_FAILED',
+          error: `Step-up verification failed (${verified.reason || 'Invalid answer'}). Complete the new verification prompt.`,
+          securityDecision: updatedDecision,
+          stepUpChallenge: freshChallenge,
+        },
+        { status: 403 },
+      ),
+      securityDecision: updatedDecision,
+    };
+  }
+
+  if (decision === 'CHALLENGE') {
     const stepUpChallenge = issueStepUpChallenge(accountId, eventType);
     return {
       blockedResponse: NextResponse.json(
@@ -434,10 +434,46 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
     }
     case 'list': return invoke(['list', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
     case 'buy': {
-      const accountId = str(body.subject, `demo-${role(body)}-subject`);
+      const targetRole = role(body);
+      const buyPriceInr = computeFacePriceInr(body.priceWei, 3000);
+      if (fs.existsSync(walletPath()) && (targetRole === 'fanA' || targetRole === 'fanB')) {
+        const wallets = readWallets();
+        if ((wallets[targetRole] || 0) < buyPriceInr) {
+          return NextResponse.json(
+            {
+              ok: false,
+              txStatus: 'rejected',
+              txHash: null,
+              error: `Insufficient wallet balance (₹${wallets[targetRole] || 0}). Add at least ₹${buyPriceInr.toLocaleString('en-IN')} to buy this listing.`,
+            },
+            { status: 409 },
+          );
+        }
+      }
+      const accountId = str(body.subject, `demo-${targetRole}-subject`);
       const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('CHECKOUT_ATTEMPT', body, accountId);
       if (blockedResponse) return blockedResponse;
-      return invoke(['buy', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json], securityDecision);
+      const buyRes = (await runCli([
+        'buy',
+        ...roleFlags,
+        '--slot',
+        str(body.slot),
+        '--version',
+        str(body.version),
+        '--price',
+        str(body.priceWei),
+      ])) as ApiMutationResponse;
+      if (buyRes.txStatus === 'confirmed' && (targetRole === 'fanA' || targetRole === 'fanB') && fs.existsSync(walletPath())) {
+        const sellerRole = targetRole === 'fanA' ? 'fanB' : 'fanA';
+        const wallets = readWallets();
+        wallets[targetRole] = Math.max(0, (wallets[targetRole] || 0) - buyPriceInr);
+        wallets[sellerRole] = (wallets[sellerRole] || 0) + buyPriceInr;
+        writeWallets(wallets);
+      }
+      if (securityDecision) {
+        buyRes.securityDecision = securityDecision as ApiMutationResponse['securityDecision'];
+      }
+      return NextResponse.json(buyRes, { status: httpStatus(buyRes) });
     }
     case 'credential/sign': {
       const signed = await runCli(['sign-gate', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), ...(body.expirySeconds ? ['--expiry', str(body.expirySeconds)] : []), ...json]);
