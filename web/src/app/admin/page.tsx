@@ -401,33 +401,6 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
-          {(adminLogs?.totalPages ?? 1) > 1 && (
-            <div className="toolbar" style={{ marginBottom: 0, marginTop: 14 }}>
-              <span className="meta">
-                Page {adminLogs?.page ?? logPage} of {adminLogs?.totalPages ?? 1} · Showing{' '}
-                {logs.length} of {(adminLogs?.totalLogs ?? logs.length).toLocaleString()}
-              </span>
-              <div className="actions" style={{ margin: 0 }}>
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  disabled={logPage <= 1}
-                  onClick={() => setLogPage((p) => Math.max(1, p - 1))}
-                >
-                  ← Prev
-                </button>
-                <button
-                  type="button"
-                  className="secondary small-btn"
-                  disabled={logPage >= (adminLogs?.totalPages ?? 1)}
-                  onClick={() => setLogPage((p) => p + 1)}
-                >
-                  Next →
-                </button>
-              </div>
-            </div>
-          )}
-        </>
         ) : (
           <p>Loading role accounts…</p>
         )}
