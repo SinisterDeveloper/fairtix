@@ -189,6 +189,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       )) as ApiMutationResponse;
       return NextResponse.json(initRes, { status: httpStatus(initRes) });
     }
+    case 'organiser/reset-event': {
+      const resetRes = await runCli(['reset-demo'], 15_000);
+      return NextResponse.json(resetRes, { status: resetRes.ok === false ? 500 : 200 });
+    }
     case 'organiser/draw': {
       const status = await runCli(['status']) as Partial<DemoStatusResponse> & { ok?: boolean };
       if (shouldMineBeforeFinalize(status)) {

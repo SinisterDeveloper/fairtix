@@ -28,6 +28,7 @@ export default function OrganiserPage() {
   const [busy, setBusy] = useState(false);
   const [eventTitle, setEventTitle] = useState(DEFAULT_EVENT_META.title);
   const [eventVenue, setEventVenue] = useState(DEFAULT_EVENT_META.venue);
+  const [eventDate, setEventDate] = useState(DEFAULT_EVENT_META.dateLabel);
   const [newCapacity, setNewCapacity] = useState('2');
   const [newQueueSeconds, setNewQueueSeconds] = useState('600');
   const [newPriceInr, setNewPriceInr] = useState('3000');
@@ -70,6 +71,7 @@ export default function OrganiserPage() {
     const meta = loadEventMeta();
     setEventTitle(meta.title);
     setEventVenue(meta.venue);
+    setEventDate(meta.dateLabel);
     void refresh();
     const id = setInterval(refresh, 3000);
     return () => clearInterval(id);
@@ -81,7 +83,7 @@ export default function OrganiserPage() {
       saveEventMeta({
         title: eventTitle.trim() || DEFAULT_EVENT_META.title,
         venue: eventVenue.trim() || DEFAULT_EVENT_META.venue,
-        dateLabel: 'Live Event',
+        dateLabel: eventDate.trim() || DEFAULT_EVENT_META.dateLabel,
       });
       const r = await fetch('/api/organiser/create-event', {
         method: 'POST',
@@ -94,6 +96,21 @@ export default function OrganiserPage() {
       });
       setResult((await r.json()) as ApiMutationResponse);
       await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetEvent() {
+    setBusy(true);
+    try {
+      const r = await fetch('/api/organiser/reset-event', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      setResult((await r.json()) as ApiMutationResponse);
+      setStatus(null);
     } finally {
       setBusy(false);
     }
@@ -173,10 +190,10 @@ export default function OrganiserPage() {
 
       <section className="card">
         <div className="card-head">
-          <h2>Create new event &amp; launch booking queue</h2>
-          <span className="pill">Replaces current demo event</span>
+          <h2>Create &amp; manage event</h2>
+          <span className="pill">{status ? 'Active event live' : 'No active event'}</span>
         </div>
-        <div className="inline-fields">
+        <div className="metrics-grid">
           <label>
             Event name
             <input value={eventTitle} disabled={busy} onChange={(e) => setEventTitle(e.target.value)} />
@@ -184,6 +201,10 @@ export default function OrganiserPage() {
           <label>
             Venue
             <input value={eventVenue} disabled={busy} onChange={(e) => setEventVenue(e.target.value)} />
+          </label>
+          <label>
+            Date / schedule
+            <input value={eventDate} disabled={busy} onChange={(e) => setEventDate(e.target.value)} />
           </label>
         </div>
         <div className="metrics-grid">
@@ -221,9 +242,28 @@ export default function OrganiserPage() {
           </label>
         </div>
         <div className="actions" style={{ marginTop: 8, marginBottom: 0 }}>
-          <button disabled={busy} className="secondary" onClick={() => void createEvent()}>
+          <button disabled={busy} onClick={() => void createEvent()}>
             {busy ? 'Creating event…' : 'Create event & open queue'}
           </button>
+          <button
+            type="button"
+            disabled={busy}
+            className="secondary"
+            onClick={() =>
+              saveEventMeta({
+                title: eventTitle.trim() || DEFAULT_EVENT_META.title,
+                venue: eventVenue.trim() || DEFAULT_EVENT_META.venue,
+                dateLabel: eventDate.trim() || DEFAULT_EVENT_META.dateLabel,
+              })
+            }
+          >
+            Save display details
+          </button>
+          {status && (
+            <button type="button" disabled={busy} className="secondary" onClick={() => void resetEvent()}>
+              Close &amp; clear event
+            </button>
+          )}
         </div>
       </section>
 

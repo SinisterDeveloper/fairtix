@@ -5,9 +5,9 @@ export type EventMeta = {
 };
 
 export const DEFAULT_EVENT_META: EventMeta = {
-  title: 'Coldplay — Music of the Spheres',
-  venue: 'DY Patil Stadium, Mumbai',
-  dateLabel: 'Live Demo Event',
+  title: 'Live Concert Event',
+  venue: 'Main Arena',
+  dateLabel: 'Upcoming',
 };
 
 const STORAGE_KEY = 'fairtickets-event-meta';
