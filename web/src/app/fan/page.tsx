@@ -147,6 +147,9 @@ export default function FanPage() {
   const activeListings = status?.tickets?.filter((t) => t.listed) || [];
   const phase = status?.phase?.toUpperCase() || '';
   const enteredInfo = status?.contract ? enteredByContract[status.contract.toLowerCase()]?.[role] : undefined;
+  const walletBalanceInr = status?.walletBalancesInr?.[role] ?? 0;
+  const requiredPriceInr = status?.facePriceInr ?? 3000;
+  const hasEnoughBalance = walletBalanceInr >= requiredPriceInr;
 
   useEffect(() => {
     if (heldTicket) {
@@ -220,15 +223,23 @@ export default function FanPage() {
           <strong>{isFan ? fanQueueStatus : 'Select Fan A or Fan B'}</strong>
         </div>
         <div>
-          <span>Tickets booked · Credit</span>
+          <span>Wallet balance</span>
           <strong>
-            {status ? `${status.issuedCount}/${status.capacity}` : '—'} ·{' '}
-            {status ? formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr) : '₹0'}
+            ₹{walletBalanceInr.toLocaleString('en-IN')}
           </strong>
         </div>
-        <div style={{ alignSelf: 'center', justifySelf: 'end' }}>
-          <button className="secondary" onClick={() => void refresh()}>
-            Refresh bookings
+        <div style={{ alignSelf: 'center', justifySelf: 'end', display: 'flex', gap: 8 }}>
+          {isFan && (
+            <button
+              className="secondary small-btn"
+              disabled={busy}
+              onClick={() => void act('wallet/topup', { amountInr: requiredPriceInr })}
+            >
+              + Add ₹{requiredPriceInr.toLocaleString('en-IN')}
+            </button>
+          )}
+          <button className="secondary small-btn" onClick={() => void refresh()}>
+            Refresh
           </button>
         </div>
       </section>
@@ -272,7 +283,21 @@ export default function FanPage() {
               Status: <strong>{fanQueueStatus}</strong>
             </p>
           )}
-          <button disabled={!isFan || busy} onClick={() => void act('enter', { subject })}>
+          {isFan && status && !hasEnoughBalance && (
+            <div className="role-warning" style={{ margin: '10px 0' }}>
+              Wallet balance ₹{walletBalanceInr.toLocaleString('en-IN')} is below ₹{requiredPriceInr.toLocaleString('en-IN')}.{' '}
+              <button
+                type="button"
+                className="small-btn"
+                style={{ marginLeft: 8 }}
+                disabled={busy}
+                onClick={() => void act('wallet/topup', { amountInr: requiredPriceInr })}
+              >
+                Add ₹{requiredPriceInr.toLocaleString('en-IN')}
+              </button>
+            </div>
+          )}
+          <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject })}>
             Enter event
           </button>
         </section>

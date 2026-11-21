@@ -46,6 +46,31 @@ function clearServerEventMeta() {
   } catch {}
 }
 
+function walletPath() {
+  const stateTag = (process.env.FAIRTICKETS_STATE_DIR || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return nodePath.join(os.tmpdir(), `fairtickets-wallets-${stateTag}.json`);
+}
+
+function readWallets(): Record<string, number> {
+  try {
+    const p = walletPath();
+    if (!fs.existsSync(p)) return { fanA: 0, fanB: 0 };
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
+    return {
+      fanA: Math.max(0, Number(raw.fanA ?? 0)),
+      fanB: Math.max(0, Number(raw.fanB ?? 0)),
+    };
+  } catch {
+    return { fanA: 0, fanB: 0 };
+  }
+}
+
+function writeWallets(wallets: Record<string, number>) {
+  try {
+    fs.writeFileSync(walletPath(), JSON.stringify(wallets, null, 2));
+  } catch {}
+}
+
 function computeFacePriceInr(facePriceWei: unknown, fallback = 3000): number {
   try {
     if (!facePriceWei) return fallback;
@@ -73,6 +98,7 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
     if (status.ok !== false && status.facePriceWei) {
       status.facePriceInr = computeFacePriceInr(status.facePriceWei, Number(status.facePriceInr || 3000));
       status.eventMeta = readServerEventMeta();
+      status.walletBalancesInr = readWallets();
     }
     return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
   }
@@ -160,7 +186,35 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
   const roleFlags = roleArgs(role(body));
   const json = ['--json'];
   switch (endpoint) {
+    case 'wallet/topup': {
+      const targetRole = role(body);
+      if (targetRole !== 'fanA' && targetRole !== 'fanB') {
+        return NextResponse.json({ ok: false, txStatus: 'rejected', txHash: null, error: 'Select Fan A or Fan B to top up wallet.' }, { status: 400 });
+      }
+      const amount = Math.max(100, Math.min(100_000, Math.floor(num(body.amountInr, 3000))));
+      const wallets = readWallets();
+      wallets[targetRole] = (wallets[targetRole] || 0) + amount;
+      writeWallets(wallets);
+      return NextResponse.json({ ok: true, txStatus: 'confirmed', txHash: null, walletBalancesInr: wallets });
+    }
     case 'enter': {
+      const targetRole = role(body);
+      if (fs.existsSync(walletPath()) && (targetRole === 'fanA' || targetRole === 'fanB')) {
+        const st = await runCli(['status']);
+        const requiredInr = computeFacePriceInr(st.facePriceWei, Number(st.facePriceInr || 3000));
+        const wallets = readWallets();
+        if ((wallets[targetRole] || 0) < requiredInr) {
+          return NextResponse.json(
+            {
+              ok: false,
+              txStatus: 'rejected',
+              txHash: null,
+              error: `Insufficient wallet balance (₹${wallets[targetRole] || 0}). Add at least ₹${requiredInr.toLocaleString('en-IN')} to join the queue.`,
+            },
+            { status: 409 },
+          );
+        }
+      }
       const subject = str(body.subject, `demo-${role(body)}`);
       if (body.enforceSecurity === true) {
         const nowIso = new Date().toISOString();
@@ -245,6 +299,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
           venue: str(body.venue, DEFAULT_EVENT_META.venue).trim() || DEFAULT_EVENT_META.venue,
           dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
         });
+        writeWallets({ fanA: 0, fanB: 0 });
       }
       return NextResponse.json(initRes, { status: httpStatus(initRes) });
     }
@@ -260,6 +315,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
     case 'organiser/reset-event': {
       const resetRes = await runCli(['reset-demo'], 15_000);
       clearServerEventMeta();
+      writeWallets({ fanA: 0, fanB: 0 });
       return NextResponse.json(resetRes, { status: resetRes.ok === false ? 500 : 200 });
     }
     case 'organiser/draw': {
@@ -270,7 +326,18 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       }
       return invoke(['draw', '--role', 'organiser', ...json]);
     }
-    case 'claim': return invoke(['claim', ...roleFlags, ...json]);
+    case 'claim': {
+      const targetRole = role(body);
+      const claimRes = (await runCli(['claim', ...roleFlags])) as ApiMutationResponse;
+      if (claimRes.txStatus === 'confirmed' && (targetRole === 'fanA' || targetRole === 'fanB') && fs.existsSync(walletPath())) {
+        const st = await runCli(['status']);
+        const priceInr = computeFacePriceInr(st.facePriceWei, Number(st.facePriceInr || 3000));
+        const wallets = readWallets();
+        wallets[targetRole] = Math.max(0, (wallets[targetRole] || 0) - priceInr);
+        writeWallets(wallets);
+      }
+      return NextResponse.json(claimRes, { status: httpStatus(claimRes) });
+    }
     case 'list': return invoke(['list', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
     case 'buy': return invoke(['buy', ...roleFlags, '--slot', str(body.slot), '--version', str(body.version), '--price', str(body.priceWei), ...json]);
     case 'credential/sign': {

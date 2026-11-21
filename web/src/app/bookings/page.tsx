@@ -261,11 +261,23 @@ export default function BookingsPage() {
 
       <section className="card">
         <div className="card-head">
-          <h2>Saved Entry Passes &amp; Wallet Credit</h2>
+          <h2>Saved Entry Passes &amp; Wallet</h2>
           {isFan && status && (
-            <button disabled={busy} className="secondary small-btn" onClick={() => void act('withdraw')}>
-              Withdraw Credit ({formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr)})
-            </button>
+            <div className="actions" style={{ margin: 0 }}>
+              <span className="pill ok">
+                Wallet: ₹{(status.walletBalancesInr?.[role] ?? 0).toLocaleString('en-IN')}
+              </span>
+              <button
+                disabled={busy}
+                className="secondary small-btn"
+                onClick={() => void act('wallet/topup', { amountInr: status.facePriceInr ?? 3000 })}
+              >
+                + Add ₹{(status.facePriceInr ?? 3000).toLocaleString('en-IN')}
+              </button>
+              <button disabled={busy} className="secondary small-btn" onClick={() => void act('withdraw')}>
+                Withdraw Credit ({formatWeiToInr(activeAccount?.withdrawableWei, status.facePriceWei, status.facePriceInr)})
+              </button>
+            </div>
           )}
         </div>
         {tray.length > 0 ? (
