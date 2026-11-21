@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import LifecycleStepper from '@/components/LifecycleStepper';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
@@ -230,8 +229,6 @@ export default function FanPage() {
           </button>
         </div>
       </section>
-
-      <LifecycleStepper phase={status?.phase} context="fan" />
 
       {!isFan && (
         <p className="role-warning" role="status">
