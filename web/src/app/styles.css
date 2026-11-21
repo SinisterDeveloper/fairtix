@@ -74,4 +74,5 @@ nav a.nav-active{color:var(--green);border-bottom:2px solid var(--green);padding
 .zone-subnav{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px}
 .zone-subnav a{padding:8px 14px;border-radius:999px;font-size:13px;font-weight:600;border:1px solid var(--line);background:#fff;color:var(--muted)}
 .zone-subnav a.active{background:var(--green);color:#fff;border-color:var(--green)}
+.qr-box{display:grid;justify-items:center;gap:10px;padding:18px;border-radius:12px;border:1px solid var(--line);background:#fafbfa;margin:12px 0}
 @media(max-width:760px){.stepper,.role-cards,.step-actions,.gate-compare,.inline-fields,.shows-grid,.ticket-stub{grid-template-columns:1fr}.ticket-stub-side{border-left:0;border-top:2px dashed #b9d7c7}}
