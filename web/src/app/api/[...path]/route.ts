@@ -3,6 +3,7 @@ import os from 'node:os';
 import nodePath from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { shouldMineBeforeFinalize } from '@/lib/allocation';
+import { readCapacityBenchmarkLogs } from '@/lib/capacity-log-store';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
 import { inrToWei } from '@/lib/format';
 import { issueStepUpChallenge, verifyStepUpChallenge } from '@/lib/step-up-challenge';
@@ -251,7 +252,7 @@ async function evaluateLiveSecurityGate(
   return { blockedResponse: null, securityDecision: secDecision };
 }
 
-export async function GET(_req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
+export async function GET(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   if (path.join('/') === 'status') {
     const status = await runCli(['status']);
@@ -309,12 +310,11 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
   if (path.join('/') === 'admin/logs') {
     const stateDir = process.env.FAIRTICKETS_STATE_DIR || nodePath.resolve(process.cwd(), '..', 'artifacts');
     const logPath = nodePath.join(stateDir, 'activity-log.ndjson');
-    let logs: ActivityLogEntry[] = [];
+    let activityLogs: ActivityLogEntry[] = [];
     try {
       if (fs.existsSync(logPath)) {
         const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
-        logs = lines
-          .slice(-100)
+        activityLogs = lines
           .reverse()
           .map((line) => {
             try {
@@ -325,14 +325,35 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
           });
       }
     } catch {
-      logs = [];
+      activityLogs = [];
     }
+    const source = req.nextUrl.searchParams.get('source') || 'all';
+    const capacityLogs = source === 'activity' ? [] : readCapacityBenchmarkLogs();
+    const combined =
+      source === 'capacity'
+        ? capacityLogs
+        : source === 'activity'
+          ? activityLogs
+          : [...activityLogs, ...capacityLogs].sort((a, b) =>
+              String(b.timestamp || '').localeCompare(String(a.timestamp || '')),
+            );
+    const rawLimit = Number(req.nextUrl.searchParams.get('limit') || 100);
+    const limit = rawLimit === 500 || rawLimit === 1000 ? rawLimit : 100;
+    const totalLogs = combined.length;
+    const totalPages = Math.max(1, Math.ceil(totalLogs / limit));
+    const page = Math.max(1, Math.min(totalPages, Number(req.nextUrl.searchParams.get('page') || 1) || 1));
+    const start = (page - 1) * limit;
+    const logs = combined.slice(start, start + limit);
     const alertsRes = await runCli(['alerts']);
     return NextResponse.json({
       ok: true,
       logs,
+      totalLogs,
+      page,
+      limit,
+      totalPages,
       alerts: Array.isArray(alertsRes.alerts) ? alertsRes.alerts : [],
-      activityCount: Number(alertsRes.activityCount ?? logs.length),
+      activityCount: Number(alertsRes.activityCount ?? activityLogs.length),
       stateDir,
     });
   }
