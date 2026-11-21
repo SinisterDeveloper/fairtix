@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import LifecycleStepper from '@/components/LifecycleStepper';
 import StadiumSeating from '@/components/StadiumSeating';
 import SecurityVerdictCard from '@/components/SecurityVerdictCard';
 import TxStatusBanner from '@/components/TxStatusBanner';
@@ -59,6 +60,8 @@ export default function FanPage() {
     const onRole = (e: Event) => {
       const next = (e as CustomEvent<RoleId>).detail;
       setRole(next);
+      setMessage(null);
+      setLastGatedAction(null);
       if (next === 'fanA' || next === 'fanB') setSubject(`demo-${next}-subject`);
     };
     window.addEventListener('fairtickets-role-change', onRole);
@@ -84,6 +87,7 @@ export default function FanPage() {
             deviceId: sharedDeviceDemo ? 'shared_bot_dev_demo' : `live_dev_${role}`,
             paymentTokenHash: sharedDeviceDemo ? 'shared_bot_pay_demo' : `live_pay_${role}`,
             eventSaleId: status?.contract || 'fairtickets_live_sale',
+            simulateSharedDevice: sharedDeviceDemo,
           }
         : {};
       if (isSecurityGated) {
@@ -126,8 +130,6 @@ export default function FanPage() {
   async function credential() {
     setBusy(true);
     try {
-      const inGate = status?.phase?.toUpperCase().includes('GATE');
-      const expirySeconds = !inGate && status?.resaleCutoff ? status.resaleCutoff + 60 : undefined;
       const r = await fetch('/api/credential/sign', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -135,16 +137,26 @@ export default function FanPage() {
           role,
           slot: Number(slot),
           version: Number(version),
-          ...(expirySeconds ? { expirySeconds } : {}),
         }),
       });
       const data = await r.json();
       setMessage(data);
       if (data.credential) {
-        const next = [
-          ...tray,
-          { ...data.credential, label: `${role === 'fanA' ? 'Fan A' : 'Fan B'} · v${version}`, role },
-        ];
+        const entry = {
+          ...data.credential,
+          label: `${role === 'fanA' ? 'Fan A' : 'Fan B'} · v${version}`,
+          role,
+        };
+        const filtered = tray.filter(
+          (c) =>
+            !(
+              String(c.contract || '').toLowerCase() === String(entry.contract || '').toLowerCase() &&
+              c.role === role &&
+              Number(c.slot) === Number(slot) &&
+              Number(c.version) === Number(version)
+            ),
+        );
+        const next = [...filtered, entry];
         setTray(next);
         localStorage.setItem('fairtickets-credentials', JSON.stringify(next));
       }
@@ -185,15 +197,33 @@ export default function FanPage() {
     ? 'Loading bookings…'
     : heldTicket
       ? `Confirmed booking · Seat #${heldTicket.slot} (Pass v${heldTicket.version}${heldTicket.admitted ? ', checked in' : ''})`
-      : isWinner
+      : phase.includes('CLAIM') && isWinner
         ? 'Reservation available to claim'
-        : status.drawn
-          ? 'No reservation after finalization'
-          : status.drawLocked
-            ? 'Allocation pending'
-            : enteredInfo
-              ? 'Entry confirmed'
-              : 'Not yet entered';
+        : phase.includes('RESALE')
+          ? 'No ticket held (browse resale below)'
+          : phase.includes('GATE') || phase.includes('CLOSED')
+            ? 'No active ticket held'
+            : status.drawn
+              ? 'No reservation after finalization'
+              : status.drawLocked
+                ? 'Allocation pending'
+                : enteredInfo
+                  ? 'Entry confirmed'
+                  : 'Not yet entered';
+
+  const roleLabel = role === 'fanA' ? 'Fan A' : 'Fan B';
+  const roleTray = tray.filter(
+    (c) => c.role === role || (!c.role && String(c.label || '').startsWith(roleLabel)),
+  );
+  const maxResaleWei = status?.maxResalePriceWei || status?.facePriceWei || '50000000000000000';
+  const enteredPriceWei = status ? inrToWei(price, status.facePriceWei, status.facePriceInr) : '0';
+  const priceExceedsCap = (() => {
+    try {
+      return BigInt(enteredPriceWei) > BigInt(maxResaleWei);
+    } catch {
+      return false;
+    }
+  })();
 
   const friendlyStage = !status
     ? 'Connecting'
@@ -229,10 +259,12 @@ export default function FanPage() {
         </Link>
       </div>
 
+      <LifecycleStepper phase={status?.phase} context="fan" />
+
       <section className="status-strip" aria-label="Your ticket status">
         <div>
-          <span>Active fan</span>
-          <strong>{isFan ? (role === 'fanA' ? 'Fan A' : 'Fan B') : role[0].toUpperCase() + role.slice(1)}</strong>
+          <span>Active account</span>
+          <strong>{isFan ? roleLabel : `${role[0].toUpperCase() + role.slice(1)} (switch to Fan A/B)`}</strong>
         </div>
         <div>
           <span>Event phase</span>
@@ -281,17 +313,19 @@ export default function FanPage() {
         onResume={() => void act('tx/resume', { scanId: message?.scanId, txHash: message?.txHash })}
       />
 
-      <SecurityVerdictCard
-        message={message}
-        busy={busy}
-        onSubmitChallenge={(challengeId, token, answer) => {
-          if (!lastGatedAction) return;
-          void act(lastGatedAction.endpoint, {
-            ...lastGatedAction.body,
-            challengeResponse: { challengeId, token, answer },
-          });
-        }}
-      />
+      {message?.stepUpChallenge && (
+        <SecurityVerdictCard
+          message={message}
+          busy={busy}
+          onSubmitChallenge={(challengeId, token, answer) => {
+            if (!lastGatedAction) return;
+            void act(lastGatedAction.endpoint, {
+              ...lastGatedAction.body,
+              challengeResponse: { challengeId, token, answer },
+            });
+          }}
+        />
+      )}
 
       {(!status || phase.includes('ENTRY')) && (
         <section className="card narrow card-active">
@@ -317,22 +351,16 @@ export default function FanPage() {
               Status: <strong>{fanQueueStatus}</strong>
             </p>
           )}
-          {isFan && status && !hasEnoughBalance && (
+          {isFan && status && !enteredInfo && !hasEnoughBalance && (
             <div className="role-warning" style={{ margin: '10px 0' }}>
-              Wallet balance ₹{walletBalanceInr.toLocaleString('en-IN')} is below ₹{requiredPriceInr.toLocaleString('en-IN')}.{' '}
-              <button
-                type="button"
-                className="small-btn"
-                style={{ marginLeft: 8 }}
-                disabled={busy}
-                onClick={() => void act('wallet/topup', { amountInr: requiredPriceInr })}
-              >
-                Add ₹{requiredPriceInr.toLocaleString('en-IN')}
-              </button>
+              Wallet balance ₹{walletBalanceInr.toLocaleString('en-IN')} is below ₹{requiredPriceInr.toLocaleString('en-IN')}. Click <strong>+ Add ₹{requiredPriceInr.toLocaleString('en-IN')}</strong> in the bar above to fund your wallet.
             </div>
           )}
-          <button disabled={!isFan || busy || (Boolean(status) && !hasEnoughBalance)} onClick={() => void act('enter', { subject, seat: selectedSeat })}>
-            Enter event
+          <button
+            disabled={!isFan || busy || Boolean(enteredInfo) || (Boolean(status) && !hasEnoughBalance)}
+            onClick={() => void act('enter', { subject, seat: selectedSeat })}
+          >
+            {enteredInfo ? 'Already in queue' : 'Enter event'}
           </button>
           <details style={{ marginTop: 12 }}>
             <summary>Security telemetry mode ({sharedDeviceDemo ? 'Shared device · Step-Up' : 'Normal fan'})</summary>
@@ -413,76 +441,72 @@ export default function FanPage() {
             </span>
           </div>
 
-          {activeListings.length > 0 && (
-            <div className="listing-box">
-              <strong>Available listing:</strong>
-              {activeListings.map((t) => (
-                <div key={t.slot} className="listing-row">
-                  <span>
-                    Seat #{t.slot} (v{t.version}) ·{' '}
-                    {formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr)}
-                  </span>
+          {!isFan ? (
+            <p className="meta">Select Fan A or Fan B to sell or buy resale tickets.</p>
+          ) : heldTicket ? (
+            <>
+              <p className="meta">
+                You hold <strong>Seat #{heldTicket.slot}</strong> (Pass v{heldTicket.version})
+                {heldTicket.listed
+                  ? ` · Listed at ${formatWeiToInr(heldTicket.resalePriceWei, status.facePriceWei, status.facePriceInr)}`
+                  : '.'}
+              </p>
+              <div className="inline-fields">
+                <label>
+                  Resale price (INR)
+                  <input value={price} onChange={(e) => setPrice(e.target.value)} />
+                </label>
+                <div style={{ alignSelf: 'end' }}>
                   <button
-                    type="button"
-                    className="secondary small-btn"
-                    onClick={() => {
-                      setSlot(String(t.slot));
-                      setVersion(String(t.version));
-                      const inrLabel = formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr).replace(/[₹,\s]/g, '');
-                      setPrice(inrLabel || '2400');
-                    }}
+                    disabled={busy || heldTicket.listed || priceExceedsCap || Number(price) <= 0}
+                    onClick={() =>
+                      void act('list', {
+                        slot: heldTicket.slot,
+                        version: heldTicket.version,
+                        priceWei: enteredPriceWei,
+                      })
+                    }
                   >
-                    Fill listing
+                    {heldTicket.listed ? 'Already listed' : 'List for resale'}
                   </button>
                 </div>
-              ))}
+              </div>
+              {priceExceedsCap && (
+                <p className="role-warning" role="alert" style={{ marginTop: 8 }}>
+                  Price exceeds the resale cap ({formatWeiToInr(maxResaleWei, status.facePriceWei, status.facePriceInr)}).
+                </p>
+              )}
+            </>
+          ) : activeListings.length > 0 ? (
+            <div className="listing-box">
+              <strong>Available resale tickets:</strong>
+              {activeListings.map((t) => {
+                const listingInr = formatWeiToInr(t.resalePriceWei, status.facePriceWei, status.facePriceInr);
+                return (
+                  <div key={t.slot} className="listing-row">
+                    <span>
+                      <strong>Seat #{t.slot}</strong> (Pass v{t.version}) · {listingInr}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        void act('buy', {
+                          slot: t.slot,
+                          version: t.version,
+                          priceWei: t.resalePriceWei,
+                        })
+                      }
+                    >
+                      Buy Ticket ({listingInr})
+                    </button>
+                  </div>
+                );
+              })}
             </div>
+          ) : (
+            <p className="meta">No resale tickets are listed right now.</p>
           )}
-
-          <div className="inline-fields">
-            <label>
-              Slot
-              <input value={slot} onChange={(e) => setSlot(e.target.value)} />
-            </label>
-            <label>
-              Ticket version
-              <input value={version} onChange={(e) => setVersion(e.target.value)} />
-            </label>
-          </div>
-
-          <label>
-            Resale price (INR)
-            <input value={price} onChange={(e) => setPrice(e.target.value)} />
-          </label>
-
-          <div className="actions" style={{ marginBottom: 0 }}>
-            <button
-              disabled={!isFan || busy}
-              className={heldTicket && !heldTicket.listed ? '' : 'secondary'}
-              onClick={() =>
-                void act('list', {
-                  slot: Number(slot),
-                  version: Number(version),
-                  priceWei: inrToWei(price, status.facePriceWei, status.facePriceInr),
-                })
-              }
-            >
-              List for resale
-            </button>
-            <button
-              disabled={!isFan || busy}
-              className={!heldTicket && activeListings.length > 0 ? '' : 'secondary'}
-              onClick={() =>
-                void act('buy', {
-                  slot: Number(slot),
-                  version: Number(version),
-                  priceWei: inrToWei(price, status.facePriceWei, status.facePriceInr),
-                })
-              }
-            >
-              Buy listing
-            </button>
-          </div>
         </section>
       )}
 
@@ -493,9 +517,11 @@ export default function FanPage() {
             <span className="pill ok">Doors Open</span>
           </div>
           <div className="actions">
-            <button disabled={!isFan || busy} onClick={() => void credential()}>
-              Sign and save credential
-            </button>
+            {heldTicket && (
+              <button disabled={!isFan || busy} onClick={() => void credential()}>
+                Sign and save credential
+              </button>
+            )}
             <Link className="button secondary" href="/bookings">
               Open My Bookings →
             </Link>
@@ -503,9 +529,9 @@ export default function FanPage() {
               Withdraw proceeds
             </button>
           </div>
-          {tray.length > 0 && (
+          {roleTray.length > 0 && (
             <ul className="pass-list">
-              {tray.map((c, i) => (
+              {roleTray.map((c, i) => (
                 <li key={i} className="pass-item">
                   <span>
                     <strong>{String(c.label)}</strong> · Seat #{String(c.slot)} · v{String(c.version)}
@@ -518,6 +544,13 @@ export default function FanPage() {
             </ul>
           )}
         </section>
+      )}
+
+      {message && !message.stepUpChallenge && (
+        <SecurityVerdictCard
+          message={message}
+          busy={busy}
+        />
       )}
     </main>
   );

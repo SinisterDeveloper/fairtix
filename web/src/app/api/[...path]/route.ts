@@ -143,6 +143,32 @@ async function evaluateLiveSecurityGate(
       paymentTokenHash: body.paymentTokenHash ? str(body.paymentTokenHash) : `live_pay_${activeRole}`,
     },
   };
+  const rawResp =
+    body.challengeResponse && typeof body.challengeResponse === 'object'
+      ? (body.challengeResponse as Record<string, unknown>)
+      : null;
+
+  if (body.simulateSharedDevice === true && !rawResp) {
+    for (let i = 1; i <= 3; i += 1) {
+      const peerSuffix = `${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`;
+      const peerEvent = {
+        eventId: `web_sim_peer_${peerSuffix}`,
+        timestamp: new Date().toISOString(),
+        eventType,
+        eventIdempotencyKey: `idem_sim_peer_${peerSuffix}`,
+        accountId: `sim_bot_cluster_${i}`,
+        sessionId: `sim_sess_${i}`,
+        eventContext: {
+          ...secEvent.eventContext,
+          deviceId: secEvent.eventContext.deviceId || 'shared_bot_dev_demo',
+          networkId: 'shared_bot_net_demo',
+          paymentTokenHash: secEvent.eventContext.paymentTokenHash || 'shared_bot_pay_demo',
+        },
+      };
+      await runCli(['security-eval', '--event', JSON.stringify(peerEvent)], 15_000);
+    }
+  }
+
   const secDecision = await runCli(['security-eval', '--event', JSON.stringify(secEvent)], 15_000);
   const decision = str(secDecision.decision, 'ALLOW');
   const reasonsList = Array.isArray(secDecision.reasons) && secDecision.reasons.length > 0
@@ -165,11 +191,6 @@ async function evaluateLiveSecurityGate(
       securityDecision: secDecision,
     };
   }
-
-  const rawResp =
-    body.challengeResponse && typeof body.challengeResponse === 'object'
-      ? (body.challengeResponse as Record<string, unknown>)
-      : null;
 
   if (rawResp && decision !== 'BLOCK') {
     const verified = verifyStepUpChallenge({
@@ -390,15 +411,15 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
       const { blockedResponse, securityDecision } = await evaluateLiveSecurityGate('QUEUE_JOIN', body, subject);
       if (blockedResponse) return blockedResponse;
       const enterRes = (await runCli(['enter', ...roleFlags, '--subject', subject])) as ApiMutationResponse;
+      if (securityDecision) {
+        enterRes.securityDecision = securityDecision as ApiMutationResponse['securityDecision'];
+      }
       if (enterRes.txStatus === 'confirmed' && requestedSeat && (targetRole === 'fanA' || targetRole === 'fanB')) {
         const seats = readSeats();
         seats[requestedSeat] = targetRole;
         writeSeats(seats);
       }
-      return NextResponse.json(
-        { ...enterRes, ...(securityDecision ? { securityDecision } : {}) },
-        { status: httpStatus(enterRes) },
-      );
+      return NextResponse.json(enterRes, { status: httpStatus(enterRes) });
     }
     case 'organiser/advance-and-lock': {
       if (body.seconds !== undefined) {
