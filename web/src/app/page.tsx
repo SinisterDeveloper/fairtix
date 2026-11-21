@@ -43,8 +43,9 @@ export default function Home() {
         <p className="eyebrow">FEATURED SHOW · LIVE BOOKING</p>
         <h1>{eventMeta.title}</h1>
         <p>
-          {eventMeta.venue} · {eventMeta.dateLabel}. Fair queue-first booking with face-value
-          resale protection—no scalping, no fake passes.
+          {eventMeta.venue} · {eventMeta.dateLabel}. How it works: <strong>Click on event</strong> →{' '}
+          <strong>Join Queue</strong> → <strong>Claim if selected</strong> →{' '}
+          <strong>Go to My Bookings and get the QR to be shown at gate</strong>.
         </p>
         <div className="bms-hero-actions">
           <Link className="bms-btn-light" href="/fan">

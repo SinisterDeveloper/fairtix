@@ -168,10 +168,10 @@ export default function BookingsPage() {
               </div>
               <div className="ticket-stub-side">
                 <button disabled={busy} onClick={() => void signPass(heldTicket.slot, heldTicket.version)}>
-                  Generate Gate Pass
+                  Get QR Pass
                 </button>
                 <Link className="small-link" href="/gate">
-                  Show at Gate →
+                  Show QR at Gate →
                 </Link>
               </div>
             </div>
