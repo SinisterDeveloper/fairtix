@@ -933,6 +933,121 @@ details[open] summary {
   margin: 12px 0;
 }
 
+.stadium {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fbfcfb;
+  margin: 12px 0 16px;
+}
+
+.stadium-stage {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: #fff;
+  background: linear-gradient(135deg, #102620, #146c50);
+  padding: 8px 16px;
+  border-radius: 0 0 28px 28px;
+  width: 72%;
+  margin: 0 auto 4px;
+}
+
+.stadium-rows {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
+.stadium-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stadium-row-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 22px;
+}
+
+.stadium-seats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.seat {
+  min-width: 42px;
+  height: 36px;
+  padding: 0 8px;
+  margin: 0 !important;
+  border-radius: 8px 8px 4px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.seat.available:hover {
+  border-color: var(--green);
+  background: var(--mint);
+}
+
+.seat.selected {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(20, 108, 80, 0.16);
+}
+
+.seat.booked {
+  background: #eef2ef;
+  color: #93a09b;
+  border-color: #dde4e0;
+  opacity: 0.8;
+}
+
+.seat.resale {
+  background: #fff6dc;
+  border-color: #e6cb81;
+  color: #725311;
+}
+
+.stadium-legend {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.stadium-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+  border: 1px solid var(--line);
+}
+
+.dot.available { background: #fff; }
+.dot.selected { background: var(--green); border-color: var(--green); }
+.dot.booked { background: #eef2ef; }
+.dot.resale { background: #fff6dc; border-color: #e6cb81; }
+
 @media (max-width: 920px) {
   header {
     padding: 10px 16px;

@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import StadiumSeating from '@/components/StadiumSeating';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
@@ -11,6 +12,7 @@ export default function FanPage() {
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [subject, setSubject] = useState('fan-a-subject');
   const [slot, setSlot] = useState('1');
+  const [selectedSeat, setSelectedSeat] = useState(1);
   const [version, setVersion] = useState('1');
   const [price, setPrice] = useState('2400');
   const [message, setMessage] = useState<ApiMutationResponse | null>(null);
@@ -252,8 +254,19 @@ export default function FanPage() {
         <section className="card narrow card-active">
           <div className="card-head">
             <h2>Join Queue</h2>
-            <span className="pill ok">Queue Open</span>
+            <span className="pill ok">Seat #S{selectedSeat}</span>
           </div>
+          {status && (
+            <StadiumSeating
+              capacity={status.capacity}
+              tickets={status.tickets}
+              selectedSeat={selectedSeat}
+              onSelectSeat={(num) => {
+                setSelectedSeat(num);
+                setSlot(String(num));
+              }}
+            />
+          )}
           {isFan && status && (
             <p className="meta">
               Status: <strong>{fanQueueStatus}</strong>
@@ -285,6 +298,15 @@ export default function FanPage() {
               {formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)}
             </span>
           </div>
+          <StadiumSeating
+            capacity={status.capacity}
+            tickets={status.tickets}
+            selectedSeat={heldTicket ? heldTicket.slot : selectedSeat}
+            onSelectSeat={(num) => {
+              setSelectedSeat(num);
+              setSlot(String(num));
+            }}
+          />
           {isFan && (
             <p className="meta">
               {heldTicket
