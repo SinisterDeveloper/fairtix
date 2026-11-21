@@ -15,7 +15,9 @@
     "test:all": "npm run test:contract && npm run test:demo && npm run test:integration && npm run test:volume"
   },
   "dependencies": {
+    "@types/qrcode": "^1.5.6",
     "next": "15.5.29",
+    "qrcode": "^1.5.4",
     "react": "19.1.1",
     "react-dom": "19.1.1"
   },
