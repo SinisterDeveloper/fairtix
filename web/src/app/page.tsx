@@ -33,6 +33,7 @@ export default function Home() {
       .finally(() => setLoaded(true));
   }, []);
 
+  const liveMeta = status?.eventMeta || eventMeta;
   const livePrice = status
     ? formatWeiToInr(status.facePriceWei, status.facePriceWei, status.facePriceInr)
     : '—';
@@ -43,9 +44,9 @@ export default function Home() {
         <>
           <section className="bms-hero">
             <p className="eyebrow">FEATURED SHOW</p>
-            <h1>{eventMeta.title}</h1>
+            <h1>{liveMeta.title}</h1>
             <p>
-              {eventMeta.venue} · {eventMeta.dateLabel}
+              {liveMeta.venue} · {liveMeta.dateLabel}
             </p>
             <div className="bms-hero-actions">
               <Link className="bms-btn-light" href="/fan">
@@ -70,9 +71,9 @@ export default function Home() {
                     <span className="show-tag">LIVE NOW</span>
                     <strong>{stageLabel(status.phase)}</strong>
                   </div>
-                  <h3>{eventMeta.title}</h3>
+                  <h3>{liveMeta.title}</h3>
                   <p className="show-meta">
-                    {eventMeta.venue} · {eventMeta.dateLabel}
+                    {liveMeta.venue} · {liveMeta.dateLabel}
                   </p>
                 </div>
                 <div className="show-footer">

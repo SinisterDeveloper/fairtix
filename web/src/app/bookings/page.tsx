@@ -96,6 +96,7 @@ export default function BookingsPage() {
   }
 
   const activeAccount = status?.roles?.[role];
+  const liveMeta = status?.eventMeta || eventMeta;
   const activeAddr = activeAccount?.address?.toLowerCase() || '';
   const isWinner = Boolean(activeAddr && status?.winners?.some((w) => w.toLowerCase() === activeAddr));
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
@@ -150,9 +151,9 @@ export default function BookingsPage() {
             <div className="ticket-stub">
               <div className="ticket-stub-main">
                 <span className="eyebrow">CONFIRMED BOOKING</span>
-                <h3 style={{ margin: 0 }}>{eventMeta.title}</h3>
+                <h3 style={{ margin: 0 }}>{liveMeta.title}</h3>
                 <p className="meta" style={{ margin: 0 }}>
-                  {eventMeta.venue} · {eventMeta.dateLabel}
+                  {liveMeta.venue} · {liveMeta.dateLabel}
                 </p>
                 <p style={{ margin: '6px 0 0' }}>
                   <strong>Seat #{heldTicket.slot}</strong> · Pass <code>v{heldTicket.version}</code> ·

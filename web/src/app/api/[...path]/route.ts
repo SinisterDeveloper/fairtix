@@ -1,13 +1,61 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import nodePath from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { shouldMineBeforeFinalize } from '@/lib/allocation';
 import { httpStatus, roleArgs, runCli } from '@/lib/cli-bridge';
 import { inrToWei } from '@/lib/format';
-import type { ActivityLogEntry, ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
+import type { ActivityLogEntry, ApiMutationResponse, DemoStatusResponse, EventDisplayMeta, RoleId } from '@/lib/types';
 
 export const runtime = 'nodejs';
 const MAX_ENTRY_WINDOW_SECONDS = 86_400;
+const BASE_FACE_PRICE_WEI = BigInt('50000000000000000');
+const BASE_FACE_PRICE_INR = BigInt(3000);
+const DEFAULT_EVENT_META: EventDisplayMeta = { title: 'Live Concert Event', venue: 'Main Arena', dateLabel: 'Upcoming' };
+
+function eventMetaPath() {
+  const stateTag = (process.env.FAIRTICKETS_STATE_DIR || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
+  return nodePath.join(os.tmpdir(), `fairtickets-event-meta-${stateTag}.json`);
+}
+
+function readServerEventMeta(): EventDisplayMeta {
+  try {
+    const p = eventMetaPath();
+    if (!fs.existsSync(p)) return DEFAULT_EVENT_META;
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<EventDisplayMeta>;
+    return {
+      title: raw.title?.trim() || DEFAULT_EVENT_META.title,
+      venue: raw.venue?.trim() || DEFAULT_EVENT_META.venue,
+      dateLabel: raw.dateLabel?.trim() || DEFAULT_EVENT_META.dateLabel,
+    };
+  } catch {
+    return DEFAULT_EVENT_META;
+  }
+}
+
+function writeServerEventMeta(meta: EventDisplayMeta) {
+  try {
+    fs.writeFileSync(eventMetaPath(), JSON.stringify(meta, null, 2));
+  } catch {}
+}
+
+function clearServerEventMeta() {
+  try {
+    const p = eventMetaPath();
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {}
+}
+
+function computeFacePriceInr(facePriceWei: unknown, fallback = 3000): number {
+  try {
+    if (!facePriceWei) return fallback;
+    const wei = BigInt(String(facePriceWei));
+    if (wei <= BigInt(0)) return fallback;
+    return Math.max(1, Math.round(Number((wei * BASE_FACE_PRICE_INR + BASE_FACE_PRICE_WEI / BigInt(2)) / BASE_FACE_PRICE_WEI)));
+  } catch {
+    return fallback;
+  }
+}
 type Body = Record<string, unknown>;
 const str = (v: unknown, fallback = '') => String(v ?? fallback);
 const num = (v: unknown, fallback = 0) => Number(v ?? fallback);
@@ -22,6 +70,10 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ path: 
   const { path } = await context.params;
   if (path.join('/') === 'status') {
     const status = await runCli(['status']);
+    if (status.ok !== false && status.facePriceWei) {
+      status.facePriceInr = computeFacePriceInr(status.facePriceWei, Number(status.facePriceInr || 3000));
+      status.eventMeta = readServerEventMeta();
+    }
     return NextResponse.json(status, { status: status.ok === false ? 503 : 200 });
   }
   if (path.join('/') === 'organiser/alerts') return NextResponse.json(await runCli(['alerts']));
@@ -187,10 +239,27 @@ export async function POST(req: NextRequest, context: { params: Promise<{ path: 
         ],
         30_000,
       )) as ApiMutationResponse;
+      if (initRes.ok !== false && initRes.txStatus === 'confirmed') {
+        writeServerEventMeta({
+          title: str(body.title, DEFAULT_EVENT_META.title).trim() || DEFAULT_EVENT_META.title,
+          venue: str(body.venue, DEFAULT_EVENT_META.venue).trim() || DEFAULT_EVENT_META.venue,
+          dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
+        });
+      }
       return NextResponse.json(initRes, { status: httpStatus(initRes) });
+    }
+    case 'organiser/save-meta': {
+      const meta: EventDisplayMeta = {
+        title: str(body.title, DEFAULT_EVENT_META.title).trim() || DEFAULT_EVENT_META.title,
+        venue: str(body.venue, DEFAULT_EVENT_META.venue).trim() || DEFAULT_EVENT_META.venue,
+        dateLabel: str(body.dateLabel, DEFAULT_EVENT_META.dateLabel).trim() || DEFAULT_EVENT_META.dateLabel,
+      };
+      writeServerEventMeta(meta);
+      return NextResponse.json({ ok: true, txStatus: 'confirmed', txHash: null, eventMeta: meta });
     }
     case 'organiser/reset-event': {
       const resetRes = await runCli(['reset-demo'], 15_000);
+      clearServerEventMeta();
       return NextResponse.json(resetRes, { status: resetRes.ok === false ? 500 : 200 });
     }
     case 'organiser/draw': {

@@ -138,6 +138,7 @@ export default function FanPage() {
   }
 
   const activeAccount = status?.roles?.[role];
+  const liveMeta = status?.eventMeta || eventMeta;
   const activeAddr = activeAccount?.address?.toLowerCase() || '';
   const isWinner = Boolean(activeAddr && status?.winners?.some((w) => w.toLowerCase() === activeAddr));
   const heldTicket = status?.tickets?.find((t) => t.owner.toLowerCase() === activeAddr);
@@ -195,8 +196,8 @@ export default function FanPage() {
 
       <div className="card-head">
         <div>
-          <p className="eyebrow">BOOK TICKETS · {eventMeta.venue.toUpperCase()}</p>
-          <h1>{eventMeta.title}</h1>
+          <p className="eyebrow">BOOK TICKETS · {liveMeta.venue.toUpperCase()}</p>
+          <h1>{liveMeta.title}</h1>
         </div>
         <Link className="button secondary small-btn" href="/bookings">
           Manage Bookings →
