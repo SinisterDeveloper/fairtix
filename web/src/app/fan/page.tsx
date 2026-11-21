@@ -21,6 +21,8 @@ export default function FanPage() {
   const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
   const [statusError, setStatusError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [challengeAnswer, setChallengeAnswer] = useState('');
+  const [lastGatedAction, setLastGatedAction] = useState<{ endpoint: string; body: Record<string, unknown> } | null>(null);
   const isFan = role === 'fanA' || role === 'fanB';
 
   async function refresh(): Promise<DemoStatusResponse | null> {
@@ -73,10 +75,23 @@ export default function FanPage() {
   async function act(endpoint: string, body: Record<string, unknown> = {}) {
     setBusy(true);
     try {
+      const isSecurityGated = endpoint === 'enter' || endpoint === 'claim' || endpoint === 'buy';
+      const securityPayload = isSecurityGated
+        ? {
+            subject: strSubject(body.subject),
+            sessionId: `live_sess_${role}`,
+            deviceId: `live_dev_${role}`,
+            paymentTokenHash: `live_pay_${role}`,
+            eventSaleId: status?.contract || 'fairtickets_live_sale',
+          }
+        : {};
+      if (isSecurityGated) {
+        setLastGatedAction({ endpoint, body });
+      }
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, ...body }),
+        body: JSON.stringify({ role, ...securityPayload, ...body }),
       });
       const data = (await r.json()) as ApiMutationResponse;
       setMessage(data);
@@ -101,6 +116,10 @@ export default function FanPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function strSubject(override: unknown) {
+    return typeof override === 'string' && override.trim() ? override.trim() : subject.trim() || `demo-${role}-subject`;
   }
 
   async function credential() {
@@ -292,6 +311,87 @@ export default function FanPage() {
         busy={busy}
         onResume={() => void act('tx/resume', { scanId: message?.scanId, txHash: message?.txHash })}
       />
+
+      {message?.securityDecision && (
+        <section className="card" aria-live="polite">
+          <div className="card-head">
+            <h2>Live Security &amp; ML Verdict</h2>
+            <span
+              className={`pill ${
+                message.securityDecision.decision === 'ALLOW'
+                  ? 'ok'
+                  : message.securityDecision.decision === 'BLOCK'
+                    ? 'danger'
+                    : 'warn'
+              }`}
+            >
+              {message.securityDecision.decision || 'ALLOW'} · Risk {message.securityDecision.riskScore ?? 0}/100
+            </span>
+          </div>
+          <div className="metrics-grid">
+            <div className="metric">
+              <span>Supervised ML Score</span>
+              <strong>{message.securityDecision.mlScore ?? 0} / 100</strong>
+              <small>Decision ID: {message.securityDecision.decisionId || '—'}</small>
+            </div>
+            <div className="metric">
+              <span>Unsupervised Anomaly</span>
+              <strong>{message.securityDecision.unsupervisedAnomalyScore ?? 0} / 100</strong>
+              <small>Live Welford Human Baseline</small>
+            </div>
+            <div className="metric">
+              <span>Reasons</span>
+              <strong>
+                {message.securityDecision.reasons && message.securityDecision.reasons.length > 0
+                  ? message.securityDecision.reasons.join(', ')
+                  : 'Clean ALLOW'}
+              </strong>
+              <small>Enforced server-side before Anvil tx</small>
+            </div>
+          </div>
+          {message.stepUpChallenge && lastGatedAction && (
+            <div style={{ marginTop: 12 }}>
+              <p>
+                <strong>{message.stepUpChallenge.prompt}</strong>
+              </p>
+              <div className="inline-fields" style={{ marginTop: 8 }}>
+                <label>
+                  Verification Answer
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="Enter answer"
+                    value={challengeAnswer}
+                    disabled={busy}
+                    onChange={(e) => setChallengeAnswer(e.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="actions" style={{ marginTop: 10 }}>
+                <button
+                  disabled={busy || !challengeAnswer.trim()}
+                  onClick={() => {
+                    const chl = message.stepUpChallenge;
+                    if (!chl) return;
+                    const answer = challengeAnswer.trim();
+                    setChallengeAnswer('');
+                    void act(lastGatedAction.endpoint, {
+                      ...lastGatedAction.body,
+                      challengeResponse: {
+                        challengeId: chl.challengeId,
+                        token: chl.token,
+                        answer,
+                      },
+                    });
+                  }}
+                >
+                  {busy ? 'Verifying…' : 'Submit Verification & Retry'}
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="grid">
         <article className={`card ${phase.includes('ENTRY') ? 'card-active' : ''}`}>
