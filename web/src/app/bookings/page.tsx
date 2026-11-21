@@ -1,12 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import TxStatusBanner from '@/components/TxStatusBanner';
 import { DEFAULT_EVENT_META, loadEventMeta } from '@/lib/event-meta';
 import { formatWeiToInr, inrToWei } from '@/lib/format';
 import type { ApiMutationResponse, DemoStatusResponse, RoleId } from '@/lib/types';
 
 export default function BookingsPage() {
+  const router = useRouter();
   const [role, setRole] = useState<RoleId>('fanA');
   const [status, setStatus] = useState<DemoStatusResponse | null>(null);
   const [eventMeta, setEventMeta] = useState(DEFAULT_EVENT_META);
@@ -89,6 +91,7 @@ export default function BookingsPage() {
         ];
         setTray(next);
         localStorage.setItem('fairtickets-credentials', JSON.stringify(next));
+        router.push('/gate');
       }
     } finally {
       setBusy(false);
@@ -171,9 +174,6 @@ export default function BookingsPage() {
                 <button disabled={busy} onClick={() => void signPass(heldTicket.slot, heldTicket.version)}>
                   Get QR Pass
                 </button>
-                <Link className="small-link" href="/gate">
-                  Show QR at Gate →
-                </Link>
               </div>
             </div>
           ) : (
