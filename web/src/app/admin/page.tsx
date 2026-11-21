@@ -15,13 +15,16 @@ export default function AdminPage() {
   const [adminLogs, setAdminLogs] = useState<AdminLogsResponse | null>(null);
   const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
   const [selectedLogKey, setSelectedLogKey] = useState<string | null>(null);
+  const [logPage, setLogPage] = useState(1);
+  const [logLimit, setLogLimit] = useState<100 | 500 | 1000>(100);
+  const [logSource, setLogSource] = useState<'all' | 'activity' | 'capacity'>('all');
   const [error, setError] = useState('');
 
-  async function refresh() {
+  async function refresh(nextPage = logPage, nextLimit = logLimit, nextSource = logSource) {
     try {
       const [sRes, lRes, secRes] = await Promise.all([
         fetch('/api/status', { cache: 'no-store' }),
-        fetch('/api/admin/logs', { cache: 'no-store' }),
+        fetch(`/api/admin/logs?page=${nextPage}&limit=${nextLimit}&source=${nextSource}`, { cache: 'no-store' }),
         fetch('/api/security/status', { cache: 'no-store' }),
       ]);
       const sJson = (await sRes.json()) as DemoStatusResponse & { error?: string };
@@ -38,10 +41,10 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    void refresh();
-    const id = setInterval(refresh, 3000);
+    void refresh(logPage, logLimit, logSource);
+    const id = setInterval(() => void refresh(logPage, logLimit, logSource), 3000);
     return () => clearInterval(id);
-  }, []);
+  }, [logPage, logLimit, logSource]);
 
   const roleList = status?.roles ? (Object.values(status.roles) as Array<DemoStatusResponse['roles'][RoleId]>) : [];
   const totalCreditsWei = roleList.reduce((sum, item) => {
@@ -89,9 +92,40 @@ export default function AdminPage() {
       <section className="card">
         <div className="card-head">
           <h2>Live backend activity log (newest first)</h2>
-          <span className="pill">{logs.length} recent entries</span>
+          <div className="actions" style={{ margin: 0 }}>
+            <span className="pill">
+              {(adminLogs?.totalLogs ?? logs.length).toLocaleString()} total
+            </span>
+            <select
+              aria-label="Log source"
+              style={{ width: 'auto', padding: '6px 10px' }}
+              value={logSource}
+              onChange={(e) => {
+                setLogSource(e.target.value as 'all' | 'activity' | 'capacity');
+                setLogPage(1);
+              }}
+            >
+              <option value="all">All logs</option>
+              <option value="activity">Chain &amp; API</option>
+              <option value="capacity">Capacity benchmark</option>
+            </select>
+            <select
+              aria-label="Logs per page"
+              style={{ width: 'auto', padding: '6px 10px' }}
+              value={logLimit}
+              onChange={(e) => {
+                setLogLimit(Number(e.target.value) as 100 | 500 | 1000);
+                setLogPage(1);
+              }}
+            >
+              <option value={100}>100 / page</option>
+              <option value={500}>500 / page</option>
+              <option value={1000}>1000 / page</option>
+            </select>
+          </div>
         </div>
         {logs.length > 0 ? (
+          <>
           <div className="table-wrap">
             <table>
               <thead>
@@ -175,6 +209,33 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
+          {(adminLogs?.totalPages ?? 1) > 1 && (
+            <div className="toolbar" style={{ marginBottom: 0, marginTop: 14 }}>
+              <span className="meta">
+                Page {adminLogs?.page ?? logPage} of {adminLogs?.totalPages ?? 1} · Showing{' '}
+                {logs.length} of {(adminLogs?.totalLogs ?? logs.length).toLocaleString()}
+              </span>
+              <div className="actions" style={{ margin: 0 }}>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  disabled={logPage <= 1}
+                  onClick={() => setLogPage((p) => Math.max(1, p - 1))}
+                >
+                  ← Prev
+                </button>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  disabled={logPage >= (adminLogs?.totalPages ?? 1)}
+                  onClick={() => setLogPage((p) => p + 1)}
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
+        </>
         ) : (
           <p>No activity log entries recorded yet.</p>
         )}
@@ -340,6 +401,33 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
+          {(adminLogs?.totalPages ?? 1) > 1 && (
+            <div className="toolbar" style={{ marginBottom: 0, marginTop: 14 }}>
+              <span className="meta">
+                Page {adminLogs?.page ?? logPage} of {adminLogs?.totalPages ?? 1} · Showing{' '}
+                {logs.length} of {(adminLogs?.totalLogs ?? logs.length).toLocaleString()}
+              </span>
+              <div className="actions" style={{ margin: 0 }}>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  disabled={logPage <= 1}
+                  onClick={() => setLogPage((p) => Math.max(1, p - 1))}
+                >
+                  ← Prev
+                </button>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  disabled={logPage >= (adminLogs?.totalPages ?? 1)}
+                  onClick={() => setLogPage((p) => p + 1)}
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
+        </>
         ) : (
           <p>Loading role accounts…</p>
         )}

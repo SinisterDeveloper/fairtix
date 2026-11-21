@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { appendCapacityBenchmarkLogs } from '@/lib/capacity-log-store';
 import { runCli } from '@/lib/cli-bridge';
-import { capacityInputs, type CapacityConfig } from '@/lib/security-capacity';
+import { capacityInputs, type CapacityConfig, type CapacityReport } from '@/lib/security-capacity';
 import { authorizeSecurityEvaluation } from '@/lib/security-evaluation-auth';
 
 export const runtime = 'nodejs';
@@ -66,6 +67,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error }, { status: timedOut ? 504 : 502 });
     }
 
+    appendCapacityBenchmarkLogs(config, result as CapacityReport);
     return NextResponse.json(result, { headers: { 'Cache-Control': 'no-store' } });
   } finally {
     capacityRunning = false;
